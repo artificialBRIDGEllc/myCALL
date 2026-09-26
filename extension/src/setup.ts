@@ -1,4 +1,4 @@
-import { loadSettings, saveSettings, type Settings } from "./shared.js";
+import { hostPattern, loadSettings, saveSettings, type Settings } from "./shared.js";
 
 const form = document.getElementById("form") as HTMLFormElement;
 const status = document.getElementById("status")!;
@@ -32,6 +32,12 @@ form.onsubmit = async (e) => {
     rubricId: String(data.get("rubricId") ?? "medicare-tpmo"),
     agentName: String(data.get("agentName") ?? ""),
   };
+  // Ask for access to this one server only (not every site), while we still have the click gesture.
+  const granted = await chrome.permissions.request({ origins: [hostPattern(s.serverUrl)] }).catch(() => false);
+  if (!granted) {
+    status.textContent = "myCALL needs permission to reach your server. Click Save again and choose Allow.";
+    return;
+  }
   await saveSettings(s);
   status.textContent = "Saved.";
   void loadRubrics(s);
