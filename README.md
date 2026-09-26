@@ -98,7 +98,7 @@ npm run build:extension     # → dist/extension
 ```
 
 1. Open `chrome://extensions`, turn on Developer mode, click **Load unpacked**, and choose `dist/extension`.
-2. Open the extension's **Setup** page. Enter the server address and token, then click **Allow microphone**.
+2. Open the extension's **Setup** page. Enter the server address and token, then click **Allow microphone**. Click **Save**, and when Chrome asks, allow access to your server. The extension only ever asks for that one site, never all websites.
 3. On a call tab, click the myCALL icon, then **Score this tab's call**.
 
 ## Formats

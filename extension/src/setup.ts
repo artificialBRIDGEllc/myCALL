@@ -32,6 +32,13 @@ form.onsubmit = async (e) => {
     rubricId: String(data.get("rubricId") ?? "medicare-tpmo"),
     agentName: String(data.get("agentName") ?? ""),
   };
+  // Ask for access to this one server only (not every site), while we still have the click gesture.
+  const origin = `${new URL(s.serverUrl).origin}/*`;
+  const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+  if (!granted) {
+    status.textContent = "myCALL needs permission to reach your server. Click Save again and choose Allow.";
+    return;
+  }
   await saveSettings(s);
   status.textContent = "Saved.";
   void loadRubrics(s);

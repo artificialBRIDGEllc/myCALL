@@ -4,8 +4,24 @@
   "version": "1.0.0",
   "description": "Real-time compliance coaching and scoring for calls in your browser: softphones, dialers, Zoom, Meet, Teams.",
   "minimum_chrome_version": "116",
-  "permissions": ["tabCapture", "offscreen", "storage", "activeTab"],
-  "background": { "service_worker": "service-worker.js", "type": "module" },
-  "action": { "default_popup": "popup.html", "default_title": "myCALL" },
-  "options_page": "setup.html"
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "storage",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "myCALL"
+  },
+  "options_page": "setup.html",
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ]
 }
