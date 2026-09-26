@@ -65,12 +65,6 @@ export const api = {
   rescore: (id: string, body: { rubricId?: string; swapRoles?: boolean }) =>
     request<{ id: string }>(`/api/calls/${id}/rescore`, { method: "POST", body: JSON.stringify(body) }),
   remove: (id: string) => request<void>(`/api/calls/${id}`, { method: "DELETE" }),
-  audioUrl: (id: string) => {
-    const t = getToken();
-    return `/api/calls/${id}/audio${t ? `?token=${encodeURIComponent(t)}` : ""}`;
-  },
-  exportUrl: (id: string) => {
-    const t = getToken();
-    return `/api/calls/${id}/export${t ? `?token=${encodeURIComponent(t)}` : ""}`;
-  },
+  /** Short-lived signed URL for things that can't send headers (audio player, downloads). */
+  signedUrl: async (path: string) => (await request<{ url: string }>("/api/sign", { method: "POST", body: JSON.stringify({ path }) })).url,
 };

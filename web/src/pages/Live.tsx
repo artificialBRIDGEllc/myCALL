@@ -114,7 +114,7 @@ export function LivePage({ config }: { config: ServerConfig | null }) {
     const onClose = () => setPhase((p) => (p === "done" ? p : p === "scoring" ? "done" : "setup"));
     try {
       if (asDemo) {
-        client.current = new LiveClient(window.location.origin, getToken(), base, onMessage, onClose);
+        client.current = await LiveClient.open(window.location.origin, getToken(), base, onMessage, onClose);
         return;
       }
       // Ask for permissions first so the agent sees the browser prompts before anything starts.
@@ -128,7 +128,14 @@ export function LivePage({ config }: { config: ServerConfig | null }) {
           throw e;
         }
       }
-      const lc = new LiveClient(window.location.origin, getToken(), base, onMessage, onClose);
+      let lc: LiveClient;
+      try {
+        lc = await LiveClient.open(window.location.origin, getToken(), base, onMessage, onClose);
+      } catch (e) {
+        mic.getTracks().forEach((t) => t.stop());
+        call?.getTracks().forEach((t) => t.stop());
+        throw e;
+      }
       client.current = lc;
       capture.current = await startCapture({ mic, call }, "/pcm-worklet.js", (pcm) => lc.sendAudio(pcm));
       // If the agent clicks "Stop sharing" in Chrome's bar, end the call cleanly.

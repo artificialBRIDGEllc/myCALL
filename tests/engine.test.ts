@@ -6,7 +6,7 @@ import { redactPHI } from "../src/engine/redact.js";
 import type { AiReview, AiReviewer } from "../src/engine/reviewer.js";
 import { buildUserPrompt } from "../src/engine/reviewer.js";
 import { runRules } from "../src/engine/rules.js";
-import { scoreCall } from "../src/engine/score.js";
+import { scoreCall, verifyEvidence } from "../src/engine/score.js";
 import { normalize } from "../src/engine/text.js";
 import { generalSalesRubric, medicareRubric } from "../src/rubrics/index.js";
 import { sampleTranscript } from "../src/rubrics/sample-call.js";
@@ -162,6 +162,30 @@ describe("scoreCall — with AI reviewer", () => {
     expect(r.aiError).toBe("timeout");
     expect(r.aiReviewer).toBeNull();
     expect(r.criteria.find((c) => c.criterionId === "rapport")!.status).toBe("needs_review");
+  });
+});
+
+describe("evidence verification", () => {
+  const byUtt = new Map(sampleTranscript.utterances.map((x) => [x.id, x]));
+  const check = (utteranceId: number, quote: string) =>
+    verifyEvidence({ criterionId: "x", status: "pass", scorePercent: 100, rationale: "", evidence: [{ utteranceId, quote }], coaching: null }, byUtt).length;
+
+  it("accepts verbatim quotes, ignoring case and punctuation, with ... skips", () => {
+    expect(check(19, "honestly, this is the BEST plan out there")).toBe(1);
+    expect(check(21, "The premium is zero dollars ... maximum out of pocket")).toBe(1);
+  });
+
+  it("rejects reordered, stitched-together or too-short quotes", () => {
+    expect(check(19, "your doctors lose you'll the best plan")).toBe(0); // same words, wrong order
+    expect(check(19, "this is the best plan next year")).toBe(0); // not contiguous
+    expect(check(19, "best")).toBe(0);
+    expect(check(99, "anything")).toBe(0); // no such utterance
+  });
+
+  it("accepts quotes of redacted text the AI actually saw", () => {
+    const u = { id: 0, start: 0, end: 3, speaker: "1", role: "customer" as const, text: "My number is 555-123-4567 okay" };
+    const one = new Map([[0, u]]);
+    expect(verifyEvidence({ criterionId: "x", status: "pass", scorePercent: 100, rationale: "", evidence: [{ utteranceId: 0, quote: "my number is [PHONE] okay" }], coaching: null }, one)).toHaveLength(1);
   });
 });
 

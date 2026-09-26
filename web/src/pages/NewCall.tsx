@@ -140,7 +140,12 @@ export function NewCallPage({ config }: { config: ServerConfig | null }) {
         }}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => e.key === "Enter" && input.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            input.current?.click();
+          }
+        }}
       >
         <svg viewBox="0 0 24 24" className="h-10 w-10 text-brand-600" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
           <path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" strokeLinecap="round" strokeLinejoin="round" />

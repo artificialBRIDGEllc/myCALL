@@ -6,7 +6,7 @@ export interface AppConfig {
   port: number;
   host: string;
   dataDir: string;
-  /** When set, every /api request must carry this token (Bearer header or ?token=). */
+  /** When set, every /api request must carry this token (Authorization: Bearer header, or a short-lived signed URL from POST /api/sign). */
   apiToken: string | null;
   deepgram: DeepgramConfig | null;
   reviewer: AiReviewer | null;

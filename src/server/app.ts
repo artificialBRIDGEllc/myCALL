@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import multipart from "@fastify/multipart";
@@ -25,6 +25,9 @@ const ImportBody = z.object({
   rubricId: z.string().max(64),
 });
 
+/** Paths that may be opened with a signed URL instead of the Authorization header. */
+const SIGNABLE = /^\/api\/(calls\/[0-9a-f-]{36}\/(audio|export)|live)$/;
+
 const RescoreBody = z.object({ rubricId: z.string().max(64).optional(), swapRoles: z.boolean().optional() });
 
 export interface App {
@@ -37,8 +40,8 @@ export async function buildApp(config: AppConfig): Promise<App> {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL || "info",
-      // Audio and live URLs carry ?token=; never write it to logs.
-      serializers: { req: (req) => ({ method: req.method, url: String(req.url).replace(/([?&]token=)[^&]*/g, "$1[redacted]") }) },
+      // Signed URLs carry a short-lived signature; keep it out of logs anyway.
+      serializers: { req: (req) => ({ method: req.method, url: String(req.url).replace(/([?&]sig=)[^&]*/g, "$1[redacted]") }) },
     },
     bodyLimit: 5 * 1024 * 1024,
   });
@@ -49,12 +52,24 @@ export async function buildApp(config: AppConfig): Promise<App> {
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
 
   // ---- Auth: optional shared token (set MYCALL_API_TOKEN in production) ----
-  const tokenOk = (req: FastifyRequest) => {
+  // The token only ever travels in the Authorization header. Places that can't
+  // send headers (<audio src>, downloads, WebSocket) use short-lived signed URLs
+  // from POST /api/sign, scoped to one path.
+  const bearerOk = (req: FastifyRequest) => {
     if (!config.apiToken) return true;
-    const header = req.headers.authorization?.replace(/^Bearer\s+/i, "");
-    const query = (req.query as Record<string, string | undefined>)?.token;
-    const given = Buffer.from(header || query || "");
+    const given = Buffer.from(req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "");
     const want = Buffer.from(config.apiToken);
+    return given.length === want.length && timingSafeEqual(given, want);
+  };
+  const signature = (pathname: string, exp: number) => createHmac("sha256", config.apiToken ?? "").update(`${pathname}|${exp}`).digest("hex");
+  const signedOk = (req: FastifyRequest) => {
+    if (!config.apiToken) return false;
+    const url = new URL(req.url, "http://x");
+    const exp = Number(url.searchParams.get("exp"));
+    const sig = url.searchParams.get("sig") ?? "";
+    if (!SIGNABLE.test(url.pathname) || !Number.isFinite(exp) || exp < Date.now() / 1000) return false;
+    const want = Buffer.from(signature(url.pathname, exp));
+    const given = Buffer.from(sig);
     return given.length === want.length && timingSafeEqual(given, want);
   };
   // The Chrome extension's setup page calls the API from a chrome-extension:// origin.
@@ -70,7 +85,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   });
   app.addHook("onRequest", async (req, reply) => {
     if (!req.url.startsWith("/api/") || req.url.startsWith("/api/health")) return;
-    if (!tokenOk(req)) return reply.code(401).send({ error: "Unauthorized" });
+    if (!bearerOk(req) && !signedOk(req)) return reply.code(401).send({ error: "Unauthorized" });
   });
 
   app.addHook("onSend", async (_req, reply, payload) => {
@@ -88,6 +103,16 @@ export async function buildApp(config: AppConfig): Promise<App> {
     authRequired: Boolean(config.apiToken),
     maxUploadMb: config.maxUploadMb,
   }));
+
+  /** Exchange the bearer token for a short-lived URL (audio player, download, live WebSocket). */
+  app.post("/api/sign", async (req, reply) => {
+    const path = (req.body as { path?: unknown } | undefined)?.path;
+    if (typeof path !== "string" || !SIGNABLE.test(path)) return reply.code(400).send({ error: "This path can't be signed." });
+    if (!config.apiToken) return { url: path };
+    const ttl = path === "/api/live" ? 60 : path.endsWith("/audio") ? 3600 : 300;
+    const exp = Math.floor(Date.now() / 1000) + ttl;
+    return { url: `${path}?exp=${exp}&sig=${signature(path, exp)}` };
+  });
 
   // ---- Rubrics ----
   app.get("/api/rubrics", async () => pipeline.rubrics());

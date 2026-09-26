@@ -124,6 +124,7 @@ It exits non-zero if any call fails.
 | `POST /api/calls` | Multipart `file` + `rubricId` (+ `title`, `agentName`, `separateChannels`), or JSON `{transcript, rubricId}`. Returns `{id}`. Processing happens in the background. |
 | `GET /api/calls`, `GET /api/calls/:id` | List calls, or get one call's detail (transcript + result). |
 | `POST /api/calls/:id/rescore` | `{rubricId?, swapRoles?}` |
+| `POST /api/sign` | `{path}` returns a short-lived signed URL for audio, export or the live WebSocket (places that can't send an Authorization header). The token itself never goes in a URL. |
 | `GET /api/calls/:id/audio` | Recording (supports seeking). |
 | `GET /api/calls/:id/export` | Evidence packet (JSON) with an `X-Content-SHA256` header. |
 | `GET/POST/DELETE /api/rubrics` | Custom rubrics (validated). |
@@ -132,7 +133,7 @@ It exits non-zero if any call fails.
 ## Tests
 
 ```bash
-npm test                          # 32 unit + integration tests (engine, importers, API, live WebSocket with a fake Deepgram)
+npm test                          # 36 unit + integration tests (engine, importers, API, live WebSocket with a fake Deepgram)
 npm run typecheck
 node scripts/e2e-smoke.mjs        # browser walkthrough (needs a running server)
 node scripts/capture-smoke.mjs    # real browser mic → worklet → WebSocket → WAV pipeline with a fake Deepgram

@@ -146,6 +146,9 @@ describe("API", () => {
     expect(tpmo.status).toBe("pass");
     const audio = await fetch(`${base}/api/calls/${call.id}/audio`, { headers: auth });
     expect(audio.status).toBe(200);
+    // The <audio> element uses a signed URL instead of the token.
+    expect((await fetch(`${base}${await signed(`/api/calls/${call.id}/audio`)}`)).status).toBe(200);
+    expect((await fetch(`${base}/api/calls/${call.id}/audio?token=test-token`)).status).toBe(401);
 
     // Swap speakers and rescore: the disclosures now belong to the customer, so they fail.
     await fetch(`${base}/api/calls/${call.id}/rescore`, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ swapRoles: true }) });
@@ -179,8 +182,13 @@ describe("API", () => {
   });
 });
 
-function collectLive(start: object, audioFrames: Buffer[]): Promise<LiveServerMessage[]> {
-  const ws = new WebSocket(`${base.replace("http", "ws")}/api/live?token=test-token`);
+async function signed(path: string): Promise<string> {
+  const res = await fetch(`${base}/api/sign`, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
+  return ((await res.json()) as { url: string }).url;
+}
+
+async function collectLive(start: object, audioFrames: Buffer[]): Promise<LiveServerMessage[]> {
+  const ws = new WebSocket(`${base.replace("http", "ws")}${await signed("/api/live")}`);
   const msgs: LiveServerMessage[] = [];
   return new Promise((resolve, reject) => {
     ws.on("open", () => ws.send(JSON.stringify(start)));
@@ -199,14 +207,25 @@ function collectLive(start: object, audioFrames: Buffer[]): Promise<LiveServerMe
 }
 
 describe("live calls", () => {
-  it("rejects a live connection without the token", async () => {
-    const ws = new WebSocket(`${base.replace("http", "ws")}/api/live`);
-    const outcome = await new Promise<string>((resolve) => {
-      ws.on("unexpected-response", (_req, res) => resolve(String(res.statusCode)));
-      ws.on("open", () => resolve("opened"));
-      ws.on("error", () => resolve("error"));
-    });
-    expect(outcome).toBe("401");
+  it("rejects a live connection without a valid signature, and never accepts the raw token in the URL", async () => {
+    for (const path of ["/api/live", "/api/live?token=test-token", "/api/live?exp=9999999999&sig=deadbeef"]) {
+      const ws = new WebSocket(`${base.replace("http", "ws")}${path}`);
+      const outcome = await new Promise<string>((resolve) => {
+        ws.on("unexpected-response", (_req, res) => resolve(String(res.statusCode)));
+        ws.on("open", () => resolve("opened"));
+        ws.on("error", () => resolve("error"));
+      });
+      expect(outcome).toBe("401");
+    }
+  });
+
+  it("signed URLs are scoped to one path and expire", async () => {
+    const url = await signed("/api/live");
+    const sig = new URL(url, base).searchParams.get("sig");
+    const expiredOrMoved = [`/api/calls?exp=9999999999&sig=${sig}`, `/api/live?exp=1&sig=${sig}`];
+    for (const p of expiredOrMoved) expect((await fetch(`${base}${p}`)).status).toBe(401);
+    const bad = await fetch(`${base}/api/sign`, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ path: "/api/calls" }) });
+    expect(bad.status).toBe(400);
   });
 
   it("streams stereo audio, separates agent/customer by channel, alerts, and scores at the end", async () => {

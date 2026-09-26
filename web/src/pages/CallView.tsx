@@ -9,6 +9,7 @@ export function CallView({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null);
   const [focus, setFocus] = useState<number | null>(null);
   const [playing, setPlaying] = useState<number | null>(null);
+  const [audioSrc, setAudioSrc] = useState<string | null>(null);
   const audio = useRef<HTMLAudioElement>(null);
 
   const load = useCallback(() => api.call(id).then(setCall).catch((e: Error) => setError(e.message)), [id]);
@@ -24,6 +25,11 @@ export function CallView({ id }: { id: string }) {
     const t = setInterval(() => void load(), 2000);
     return () => clearInterval(t);
   }, [call?.status, load]);
+
+  useEffect(() => {
+    if (!call?.hasAudio) return;
+    api.signedUrl(`/api/calls/${call.id}/audio`).then(setAudioSrc).catch(() => setAudioSrc(null));
+  }, [call?.id, call?.hasAudio]);
 
   const rubric = rubrics.find((r) => r.id === call?.rubricId);
   const utterances = call?.transcript?.utterances ?? [];
@@ -131,14 +137,14 @@ export function CallView({ id }: { id: string }) {
             </div>
           </div>
 
-          {call.hasAudio && (
+          {call.hasAudio && audioSrc && (
             <div className="no-print card sticky top-16 z-10 p-3">
               <audio
                 ref={audio}
                 controls
                 preload="metadata"
                 className="w-full"
-                src={api.audioUrl(call.id)}
+                src={audioSrc}
                 onTimeUpdate={(e) => {
                   const t = e.currentTarget.currentTime;
                   const u = utterances.find((x) => t >= x.start && t <= x.end + 0.3);
@@ -291,9 +297,9 @@ function Actions({ call, rubrics, onRescore }: { call: CallDetail; rubrics: Rubr
       )}
       {call.result && (
         <>
-          <a className="btn-ghost" href={api.exportUrl(call.id)}>
+          <button className="btn-ghost" onClick={async () => (window.location.href = await api.signedUrl(`/api/calls/${call.id}/export`))}>
             Export evidence
-          </a>
+          </button>
           <button className="btn-ghost" onClick={() => window.print()}>
             Print
           </button>

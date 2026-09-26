@@ -11,6 +11,7 @@ import type {
 import { computeMetrics } from "./metrics.js";
 import type { AiReview, AiReviewer } from "./reviewer.js";
 import { runRules, type RuleFinding } from "./rules.js";
+import { redactPHI } from "./redact.js";
 import { formatClock, normalize } from "./text.js";
 
 type AiCriterion = AiReview["criteria"][number];
@@ -143,24 +144,42 @@ function result(
   };
 }
 
-/** Keep only AI evidence whose quote really appears in the cited utterance. */
+/**
+ * Keep only AI evidence whose quote really appears, word for word and in
+ * order, in the cited utterance. "..." in a quote may skip words between
+ * fragments. The quote is checked against both the raw and the PHI-redacted
+ * text (the AI only ever saw the redacted form).
+ */
 export function verifyEvidence(ai: AiCriterion, byUtt: Map<number, Utterance>): Evidence[] {
   const out: Evidence[] = [];
   for (const e of ai.evidence) {
     const u = byUtt.get(e.utteranceId);
     if (!u) continue;
-    const said = normalize(u.text);
-    const quote = normalize(e.quote);
-    if (!quote) continue;
-    const words = quote.split(" ");
-    const saidWords = new Set(said.split(" "));
-    const overlap = words.filter((w) => saidWords.has(w)).length / words.length;
-    // Redaction placeholders ([PHONE] etc.) legitimately differ from the raw text.
-    if (said.includes(quote) || overlap >= 0.7) {
+    const fragments = e.quote
+      .split(/\.{3}|…/)
+      .map(normalize)
+      .filter(Boolean);
+    const quoteWords = fragments.join(" ").split(" ").filter(Boolean).length;
+    const utteranceWords = normalize(u.text).split(" ").filter(Boolean).length;
+    // A one-word "quote" proves nothing unless the utterance itself is that short.
+    if (!fragments.length || quoteWords < Math.min(3, utteranceWords)) continue;
+    const texts = [normalize(u.text), normalize(redactPHI(u.text))];
+    if (texts.some((t) => containsInOrder(t, fragments))) {
       out.push({ utteranceId: u.id, start: u.start, end: u.end, role: u.role, quote: u.text });
     }
   }
   return dedupe(out);
+}
+
+function containsInOrder(text: string, fragments: string[]): boolean {
+  const padded = ` ${text} `;
+  let from = 0;
+  for (const f of fragments) {
+    const at = padded.indexOf(` ${f} `, from);
+    if (at < 0) return false;
+    from = at + f.length + 1;
+  }
+  return true;
 }
 
 function dedupe(evidence: Evidence[]): Evidence[] {
