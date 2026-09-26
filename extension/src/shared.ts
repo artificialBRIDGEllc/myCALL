@@ -9,6 +9,16 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = { serverUrl: "http://localhost:8787", token: "", rubricId: "medicare-tpmo", agentName: "" };
 
+/**
+ * Chrome permission match pattern for a server URL. Match patterns can't carry
+ * a port, so "http://localhost:8787" becomes "http://localhost/*".
+ */
+export function hostPattern(serverUrl: string): string {
+  const u = new URL(serverUrl);
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("The server address must start with https:// or http://");
+  return `${u.protocol}//${u.hostname}/*`;
+}
+
 export async function loadSettings(): Promise<Settings> {
   const s = (await chrome.storage.local.get("settings")) as { settings?: Partial<Settings> };
   return { ...DEFAULT_SETTINGS, ...s.settings };
