@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>myCALL setup</title>
+    <link rel="stylesheet" href="./src/ext.css" />
+  </head>
+  <body class="setup">
+    <h1>myCALL setup</h1>
+    <form id="form">
+      <label>Server address <input name="serverUrl" type="url" required placeholder="https://mycall.yourcompany.com" /></label>
+      <label>Access token <input name="token" type="password" placeholder="Leave blank if your server has none" /></label>
+      <label>Rubric <select name="rubricId"></select></label>
+      <label>Your name <input name="agentName" placeholder="Shown on your scored calls" /></label>
+      <div class="row">
+        <button type="button" id="mic">Allow microphone</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+      <p id="status" class="muted"></p>
+    </form>
+    <p class="muted">The microphone must be allowed once so myCALL can hear your side of calls. Recording laws vary by state — disclose recording where required.</p>
+    <script type="module" src="./src/setup.ts"></script>
+  </body>
+</html>

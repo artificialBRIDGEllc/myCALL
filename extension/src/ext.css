@@ -1,0 +1,27 @@
+:root { color-scheme: light dark; --brand: #0d9488; --bg: #fff; --fg: #0f172a; --muted: #64748b; --line: #e2e8f0; --bad: #e11d48; --warn: #d97706; --good: #059669; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0b1220; --fg: #e2e8f0; --muted: #94a3b8; --line: #1e293b; } }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
+body.popup { width: 360px; }
+body.setup { max-width: 520px; margin: 32px auto; padding: 0 16px; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+main { padding: 12px 14px; display: grid; gap: 10px; }
+.pill { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--line); }
+.pill.live { background: var(--bad); color: #fff; }
+button { font: inherit; font-weight: 600; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
+button.primary { background: var(--brand); color: #fff; border-color: var(--brand); }
+button.danger { background: var(--bad); color: #fff; border-color: var(--bad); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+label { display: grid; gap: 4px; font-weight: 600; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+input, select { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+.row { display: flex; gap: 8px; }
+.muted { color: var(--muted); font-size: 12px; }
+.score { font-size: 28px; font-weight: 800; }
+ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+li { display: flex; gap: 6px; align-items: baseline; }
+.dot { width: 16px; text-align: center; font-weight: 700; }
+.done { color: var(--good); } .overdue, .violated { color: var(--bad); } .pending { color: var(--muted); }
+.alert { border-radius: 8px; padding: 6px 8px; background: var(--line); }
+.alert.critical { background: #ffe4e6; color: #881337; } .alert.warning { background: #fef3c7; color: #78350f; }
+.err { color: var(--bad); }
+a { color: var(--brand); font-weight: 600; }
