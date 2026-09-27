@@ -22,7 +22,8 @@ import { sampleUtterances } from "../dist/server/rubrics/sample-call.js";
 
 const RATE = 16000;
 const RUBRIC = "medicare-tpmo";
-const LIVE_SPEED = Number(process.env.LIVE_SPEED) || 2;
+// 1 = real time, like a browser. Faster only tests how long we wait for Deepgram to catch up.
+const LIVE_SPEED = Number(process.env.LIVE_SPEED) || 1;
 const VOICES = {
   agent: [process.env.AGENT_VOICE || "aura-2-thalia-en", "aura-asteria-en"],
   customer: [process.env.CUSTOMER_VOICE || "aura-2-apollo-en", "aura-orion-en"],
@@ -202,6 +203,8 @@ for (const [name, d] of Object.entries(runs)) {
     transcript: us.map((u) => `[${u.start.toFixed(1)}] ${u.role}: ${u.text}`),
   };
   if (name === "reference") continue;
+  const lastHeard = us.at(-1)?.end ?? 0;
+  if (lastHeard < cursor - 10) problems.push(`${name}: transcript stops at ${lastHeard.toFixed(0)} s of ${cursor.toFixed(0)} s; the end of the call was lost`);
   if (!roleOk) problems.push(`${name}: agent and customer are mixed up (roleMap ${JSON.stringify(d.transcript.roleMap)})`);
   for (const x of diffs) problems.push(`${name}: ${x}`);
 }

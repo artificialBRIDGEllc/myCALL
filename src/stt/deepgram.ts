@@ -151,6 +151,13 @@ export class SegmentAssembler {
   }
 }
 
+/**
+ * After CloseStream, Deepgram sends the transcripts for any audio it hasn't
+ * finished yet, then closes. Wait this long for that before giving up: cutting
+ * it short silently drops the end of the call (seen with a real key at 5 s).
+ */
+export const LIVE_FINISH_TIMEOUT_MS = 30_000;
+
 export function openDeepgramLive(
   cfg: DeepgramConfig,
   opts: { sampleRate: number; channels: number },
@@ -185,7 +192,7 @@ export function openDeepgramLive(
         async finish() {
           clearInterval(keepAlive);
           if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "CloseStream" }));
-          const timeout = new Promise<void>((done) => setTimeout(done, 5000));
+          const timeout = new Promise<void>((done) => setTimeout(done, LIVE_FINISH_TIMEOUT_MS));
           await Promise.race([closed, timeout]);
           assembler.flushAll();
           if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
