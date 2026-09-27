@@ -59,6 +59,7 @@ It also ships with a **general sales rubric**. You can add your own rubrics as J
 
 **Speaker separation**
 - **Live calls** capture the agent's mic and the call tab on **separate audio channels**, so we always know who said what.
+- **Live call final grade.** When a live call ends, the saved recording is transcribed again in one pass, and the final grade uses that. Streaming is used only for in-call coaching: in real-key tests it dropped a word or two per call (once from the TPMO disclaimer), while whole-file transcription matched the script every time. This costs about half a cent more per call. If it fails, the grade falls back to the streamed transcript.
 - **Stereo recordings** use one channel per party.
 - **Mono recordings** use diarization, plus automatic agent detection. A **Swap speakers** button fixes wrong guesses.
 

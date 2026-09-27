@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import type { WebSocket } from "ws";
 import type { LiveClientMessage, LiveServerMessage, Role, Transcript, Utterance } from "../core/types.js";
 import { LiveSession } from "../engine/live.js";
 import { scoreCall } from "../engine/score.js";
 import { sampleUtterances } from "../rubrics/sample-call.js";
-import { openDeepgramLive, type LiveTranscriber } from "../stt/deepgram.js";
+import { openDeepgramLive, transcribeRecording, type LiveTranscriber } from "../stt/deepgram.js";
 import type { AppConfig } from "./config.js";
 import type { Store } from "./db.js";
 import type { Pipeline } from "./pipeline.js";
@@ -20,6 +21,12 @@ import { WavWriter } from "./wav.js";
  * customer). Separate channels give perfect speaker separation — no
  * diarization guesswork. {type:"stop"} (or closing the socket) ends the call;
  * the server then runs full scoring (rules + AI) and replies {type:"final"}.
+ *
+ * The streamed transcript drives live coaching only. The final grade comes
+ * from re-transcribing the saved recording in one pass: in real-key tests,
+ * streaming dropped a different word or two on each run (once "organizations"
+ * from the TPMO disclaimer, failing a critical item), while whole-file
+ * transcription of the same audio matched the script every time.
  */
 const CHANNEL_ROLES: Role[] = ["agent", "customer"];
 
@@ -36,6 +43,8 @@ export function handleLiveSocket(socket: WebSocket, deps: { store: Store; pipeli
   let finished = false;
   let rubricId = "";
   let source: "live" | "demo" = "live";
+  let audioPath: string | null = null;
+  let channelCount = 2;
 
   const send = (msg: LiveServerMessage) => {
     if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
@@ -83,7 +92,8 @@ export function handleLiveSocket(socket: WebSocket, deps: { store: Store; pipeli
       const last = sampleUtterances.at(-1)!;
       demoTimers.push(setTimeout(() => void finish(), ((last.end + 1.5) / config.demoSpeed) * 1000));
     } else {
-      const audioPath = path.join(store.audioDir, `${callId}.wav`);
+      audioPath = path.join(store.audioDir, `${callId}.wav`);
+      channelCount = msg.channels;
       wav = new WavWriter(audioPath, msg.sampleRate, msg.channels);
       store.setAudio(callId, audioPath, "audio/wav");
       try {
@@ -123,6 +133,26 @@ export function handleLiveSocket(socket: WebSocket, deps: { store: Store; pipeli
     clock = null;
   };
 
+  /** Whole-recording transcript for the final grade; falls back to the streamed one if that fails. */
+  const retranscribe = async (streamed: Transcript): Promise<Transcript> => {
+    if (source !== "live" || !audioPath || !config.deepgram || !wav?.durationSec) return streamed;
+    try {
+      const t = await transcribeRecording(config.deepgram, fs.readFileSync(audioPath), "audio/wav", true);
+      if (!t.utterances.length) return streamed;
+      // Channels are known in a live call (ch0 = agent mic, ch1 = call tab), so don't guess roles.
+      const roleMap: Record<string, Role> = {};
+      for (const u of t.utterances) roleMap[u.speaker] = channelCount === 2 ? (CHANNEL_ROLES[Number(u.speaker.replace("ch", ""))] ?? "unknown") : "agent";
+      return {
+        utterances: t.utterances.map((u) => ({ ...u, role: roleMap[u.speaker]! })),
+        durationSec: Math.max(t.durationSec, streamed.durationSec),
+        source,
+        roleMap,
+      };
+    } catch {
+      return streamed;
+    }
+  };
+
   const finish = async () => {
     if (finished || !session || !callId) return;
     finished = true;
@@ -133,14 +163,15 @@ export function handleLiveSocket(socket: WebSocket, deps: { store: Store; pipeli
     const channels = new Set(session.utterances.map((u) => u.speaker));
     const roleMap: Record<string, Role> = {};
     for (const u of session.utterances) roleMap[u.speaker] = u.role;
-    const transcript: Transcript = {
+    const streamed: Transcript = {
       utterances: [...session.utterances].sort((a, b) => a.start - b.start),
       durationSec: Math.round(duration * 100) / 100,
       source,
       roleMap: channels.size ? roleMap : {},
     };
-    store.saveTranscript(callId, transcript);
     send({ type: "scoring" });
+    const transcript = await retranscribe(streamed);
+    store.saveTranscript(callId, transcript);
     try {
       const rubric = pipeline.rubric(rubricId)!;
       const auto = await scoreCall({ rubric, transcript, reviewer: config.reviewer });
