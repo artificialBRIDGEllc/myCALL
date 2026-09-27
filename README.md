@@ -153,10 +153,10 @@ node scripts/e2e-smoke.mjs        # browser walkthrough (needs a running server)
 node scripts/capture-smoke.mjs    # real browser mic → worklet → WebSocket → WAV pipeline with a fake Deepgram
 node scripts/extension-smoke.mjs  # loads the extension in Chromium
 node scripts/review-smoke.mjs     # grade, override, sign off and calibrate in Chromium (after npm run build)
-npm run smoke:deepgram            # REAL Deepgram: speaks a sample call, scores it as stereo upload, mono upload and live stream
+npm run smoke:deepgram            # (after npm run build) REAL Deepgram: speaks a sample call, scores it as stereo upload, mono upload and live stream
 ```
 
-**Real Deepgram check.** `smoke:deepgram` uses Deepgram's own text-to-speech to voice the sample Medicare call, with a different voice for the agent and the customer. It then pushes that audio through every speech path and fails if any path grades a phrase-rule item differently from the known-correct transcript, or seats the wrong person as the agent. It needs `DEEPGRAM_API_KEY` and costs about ten cents per run. On GitHub it runs automatically (workflow **Deepgram smoke test**) when speech code changes, using the `DEEPGRAM_API_KEY` repository secret. You can also start it by hand from the Actions tab.
+**Real Deepgram check.** `smoke:deepgram` uses Deepgram's own text-to-speech to voice the sample Medicare call, with a different voice for the agent and the customer. It then pushes that audio through every speech path and fails if any path grades a phrase-rule item differently from the known-correct transcript, or seats the wrong person as the agent. It needs `DEEPGRAM_API_KEY` and costs about ten cents per run. On GitHub the **Deepgram smoke test** workflow uses the `DEEPGRAM_API_KEY` repository secret. It runs automatically when speech or scoring code lands on `main`, and anyone with write access can run it on any branch from the Actions tab. It never runs automatically on pull requests, because the key would then be available to unreviewed code.
 
 ## What's verified, and what isn't yet
 

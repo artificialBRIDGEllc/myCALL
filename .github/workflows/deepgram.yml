@@ -1,16 +1,23 @@
 # Scores a spoken sample call through the real Deepgram API (recording upload,
 # stereo and mono, plus a live stream). Uses the DEEPGRAM_API_KEY repository
-# secret and costs roughly ten cents per run, so it only runs when speech code
-# changes, or on demand from the Actions tab.
+# secret and costs roughly ten cents per run.
+#
+# The key is only handed to trusted code: merged code on main, or a run someone
+# with write access starts by hand (Actions tab -> Run workflow -> pick a branch).
+# It never runs automatically on pull requests, whose code could print the key.
 name: Deepgram smoke test
 on:
   workflow_dispatch:
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - src/stt/**
       - src/server/live.ts
       - src/server/pipeline.ts
       - scripts/deepgram-smoke.mjs
+      - src/rubrics/**
+      - src/engine/**
+      - package-lock.json
       - .github/workflows/deepgram.yml
 
 jobs:

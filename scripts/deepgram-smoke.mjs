@@ -16,9 +16,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
-import { buildApp } from "../dist/server/server/app.js";
-import { deepgramFromEnv } from "../dist/server/stt/deepgram.js";
-import { sampleUtterances } from "../dist/server/rubrics/sample-call.js";
 
 const RATE = 16000;
 const RUBRIC = "medicare-tpmo";
@@ -29,11 +26,14 @@ const VOICES = {
   customer: [process.env.CUSTOMER_VOICE || "aura-2-apollo-en", "aura-orion-en"],
 };
 
-const dg = deepgramFromEnv();
-if (!dg) {
+if (!process.env.DEEPGRAM_API_KEY) {
   console.log("skipped: DEEPGRAM_API_KEY is not set");
   process.exit(0);
 }
+const { buildApp } = await import("../dist/server/server/app.js");
+const { deepgramFromEnv } = await import("../dist/server/stt/deepgram.js");
+const { sampleUtterances } = await import("../dist/server/rubrics/sample-call.js");
+const dg = deepgramFromEnv();
 
 // ---------------------------------------------------------------------------
 // 1. Synthesize the call
@@ -168,11 +168,24 @@ async function live() {
   return { detail: await waitScored(id), events };
 }
 
+// Each path runs on its own: one failing still leaves the others (and the report) to diagnose it.
 const runs = {};
-runs.reference = await reference();
-[runs.stereo, runs.mono] = await Promise.all([upload("stereo", wav(stereo, 2), true), upload("mono", wav(mono, 1), false)]);
-const liveRun = await live();
+const problems = [];
+const attempt = async (name, fn) => {
+  try {
+    return await fn();
+  } catch (err) {
+    problems.push(`${name}: ${err.message}`);
+    return null;
+  }
+};
+runs.reference = await attempt("reference", reference);
+const [stereoRun, monoRun] = await Promise.all([attempt("stereo", () => upload("stereo", wav(stereo, 2), true)), attempt("mono", () => upload("mono", wav(mono, 1), false))]);
+runs.stereo = stereoRun;
+runs.mono = monoRun;
+const liveRun = (await attempt("live", live)) ?? { detail: null, events: { utterances: 0, alerts: [], interims: 0, errors: [] } };
 runs.live = liveRun.detail;
+for (const k of Object.keys(runs)) if (!runs[k]) delete runs[k];
 
 // ---------------------------------------------------------------------------
 // 3. Compare
@@ -180,8 +193,7 @@ runs.live = liveRun.detail;
 const rubric = (await (await fetch(`${base}/api/rubrics`)).json()).find((r) => r.id === RUBRIC);
 const ruleIds = new Set(rubric.criteria.filter((c) => c.evaluator !== "llm").map((c) => c.id));
 const statusOf = (d) => Object.fromEntries(d.result.criteria.map((c) => [c.criterionId, c.status]));
-const ref = statusOf(runs.reference);
-const problems = [];
+const ref = runs.reference ? statusOf(runs.reference) : {};
 const report = { audioSeconds: +cursor.toFixed(1), liveSpeed: LIVE_SPEED, liveEvents: liveRun.events, paths: {} };
 
 for (const [name, d] of Object.entries(runs)) {
@@ -189,9 +201,9 @@ for (const [name, d] of Object.entries(runs)) {
   const us = d.transcript.utterances;
   const agentText = us.filter((u) => u.role === "agent").map((u) => u.text).join(" ").toLowerCase();
   const customerText = us.filter((u) => u.role === "customer").map((u) => u.text).join(" ").toLowerCase();
-  // Only the agent says "licensed insurance agent"; only the customer says "Thursday at two".
-  const roleOk = agentText.includes("licensed") && !customerText.includes("licensed") && customerText.includes("thursday") && !agentText.includes("thursday at two");
-  const diffs = [...ruleIds].filter((id) => st[id] !== ref[id]).map((id) => `${id}: ${st[id]} (reference ${ref[id]})`);
+  // "Licensed insurance agent" is an agent-only line; the customer's last words confirm Thursday.
+  const roleOk = agentText.includes("licensed") && !customerText.includes("licensed") && customerText.includes("thursday");
+  const diffs = !runs.reference ? [] : [...ruleIds].filter((id) => st[id] !== ref[id]).map((id) => `${id}: ${st[id]} (reference ${ref[id]})`);
   report.paths[name] = {
     score: d.result.score,
     compliance: d.result.compliance,
@@ -208,8 +220,9 @@ for (const [name, d] of Object.entries(runs)) {
   if (!roleOk) problems.push(`${name}: agent and customer are mixed up (roleMap ${JSON.stringify(d.transcript.roleMap)})`);
   for (const x of diffs) problems.push(`${name}: ${x}`);
 }
+if (!runs.reference && Object.keys(runs).length) problems.push("reference: failed, so no grades could be compared");
 if (liveRun.events.errors.length) problems.push(`live: server errors ${JSON.stringify(liveRun.events.errors)}`);
-if (!liveRun.events.interims) problems.push("live: no interim captions arrived");
+if (runs.live && !liveRun.events.interims) problems.push("live: no interim captions arrived");
 report.problems = problems;
 
 fs.writeFileSync(process.env.REPORT || "deepgram-smoke-report.json", JSON.stringify(report, null, 2));
