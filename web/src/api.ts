@@ -1,6 +1,24 @@
-import type { CallDetail, CallRecord, Rubric } from "../../src/core/types.js";
+import type { Calibration, CallDetail, CallRecord, ReviewedStatus, Rubric } from "../../src/core/types.js";
 
 const TOKEN_KEY = "mycall.token";
+const REVIEWER_KEY = "mycall.reviewer";
+
+/** The name review decisions are signed with (remembered on this device). */
+export function getReviewer(): string {
+  try {
+    return localStorage.getItem(REVIEWER_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setReviewer(name: string): void {
+  try {
+    localStorage.setItem(REVIEWER_KEY, name);
+  } catch {
+    /* storage unavailable — the name is kept for this page only */
+  }
+}
 
 export function getToken(): string | null {
   try {
@@ -65,6 +83,13 @@ export const api = {
   rescore: (id: string, body: { rubricId?: string; swapRoles?: boolean }) =>
     request<{ id: string }>(`/api/calls/${id}/rescore`, { method: "POST", body: JSON.stringify(body) }),
   remove: (id: string) => request<void>(`/api/calls/${id}`, { method: "DELETE" }),
+  review: (id: string, criterionId: string, body: { status: ReviewedStatus; fraction?: number; note: string; reviewer: string }) =>
+    request<CallDetail>(`/api/calls/${id}/review/${encodeURIComponent(criterionId)}`, { method: "PUT", body: JSON.stringify(body) }),
+  undoReview: (id: string, criterionId: string, reviewer: string) =>
+    request<CallDetail>(`/api/calls/${id}/review/${encodeURIComponent(criterionId)}`, { method: "DELETE", body: JSON.stringify({ reviewer }) }),
+  lock: (id: string, reviewer: string, note: string) => request<CallDetail>(`/api/calls/${id}/lock`, { method: "POST", body: JSON.stringify({ reviewer, note }) }),
+  unlock: (id: string, reviewer: string, note: string) => request<CallDetail>(`/api/calls/${id}/unlock`, { method: "POST", body: JSON.stringify({ reviewer, note }) }),
+  calibration: (rubricId: string) => request<Calibration>(`/api/calibration/${encodeURIComponent(rubricId)}`),
   /** Short-lived signed URL for things that can't send headers (audio player, downloads). */
   signedUrl: async (path: string) => (await request<{ url: string }>("/api/sign", { method: "POST", body: JSON.stringify({ path }) })).url,
 };

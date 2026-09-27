@@ -133,10 +133,17 @@ export interface CriterionResult {
   maxPoints: number;
   evidence: Evidence[];
   rationale: string;
-  source: "rules" | "llm" | "rules+llm";
+  source: "rules" | "llm" | "rules+llm" | "human";
   coaching?: string;
   /** Required criteria with components: which were found. */
   componentsFound?: string[];
+  /** Set when a human reviewer overrode or confirmed the automatic grade. */
+  review?: {
+    auto: { status: CriterionStatus; fraction: number; source: Exclude<CriterionResult["source"], "human">; rationale: string };
+    reviewer: string;
+    note: string;
+    at: string;
+  };
 }
 
 export interface CallMetrics {
@@ -237,6 +244,71 @@ export type LiveClientMessage =
     }
   | { type: "stop" };
 
+// ---------------------------------------------------------------------------
+// Human review
+// ---------------------------------------------------------------------------
+
+/** What a reviewer may set a criterion to ("needs_review" is never a final answer). */
+export type ReviewedStatus = "pass" | "partial" | "fail" | "na";
+
+export interface CriterionOverride {
+  status: ReviewedStatus;
+  /** 0..1 credit for "partial" (defaults to 0.5). */
+  fraction?: number;
+  note: string;
+  reviewer: string;
+  at: string;
+}
+
+export interface CallReview {
+  /** Rubric the overrides were made against; overrides are dropped if the call is rescored with another rubric. */
+  rubricId: string;
+  overrides: Record<string, CriterionOverride>;
+  locked: boolean;
+  lockedBy: string | null;
+  lockedAt: string | null;
+}
+
+/** Append-only audit trail of every review action. */
+export interface ReviewEvent {
+  id: number;
+  callId: string;
+  action: "override" | "revert" | "lock" | "unlock";
+  criterionId: string | null;
+  fromStatus: CriterionStatus | null;
+  toStatus: ReviewedStatus | null;
+  reviewer: string;
+  note: string;
+  at: string;
+}
+
+export type ReviewState = "auto" | "in_review" | "locked";
+
+/** Per-criterion accuracy of the automatic grader, measured on signed-off calls. */
+export interface CalibrationRow {
+  criterionId: string;
+  name: string;
+  evaluator: Evaluator;
+  severity: Severity;
+  /** Signed-off calls where the automatic grader made a decision (not "needs review"). */
+  decided: number;
+  agreed: number;
+  /** Automatic fail/partial that a reviewer changed to pass/na. */
+  falseAlarms: number;
+  /** Automatic pass/na that a reviewer changed to fail/partial. */
+  misses: number;
+  /** Items the grader left for review, later graded by a person. */
+  resolvedByHuman: number;
+  /** agreed / decided, or null with no data. */
+  accuracy: number | null;
+}
+
+export interface Calibration {
+  rubricId: string;
+  lockedCalls: number;
+  rows: CalibrationRow[];
+}
+
 export interface CallRecord {
   id: string;
   title: string;
@@ -250,9 +322,15 @@ export interface CallRecord {
   score: number | null;
   compliance: ComplianceStatus | null;
   error: string | null;
+  reviewState: ReviewState;
+  /** Items still waiting for a person. */
+  openReviewItems: number;
 }
 
 export interface CallDetail extends CallRecord {
   transcript: Transcript | null;
+  /** Final result: the automatic grade with human overrides applied. */
   result: ScoreResult | null;
+  review: CallReview | null;
+  reviewLog: ReviewEvent[];
 }

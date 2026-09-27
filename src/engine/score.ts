@@ -66,21 +66,7 @@ export function assemble(
     judge(c, ruleById.get(c.id), aiById.get(c.id), aiAvailable, byUtt),
   );
 
-  const counted = criteria.filter((r) => r.status === "pass" || r.status === "partial" || r.status === "fail");
-  const max = counted.reduce((s, r) => s + r.maxPoints, 0);
-  const earned = counted.reduce((s, r) => s + r.earned, 0);
-  const score = max > 0 ? Math.round((earned / max) * 100) : 0;
-
-  const critical = new Set(rubric.criteria.filter((c) => c.severity === "critical").map((c) => c.id));
-  const criticalFailures = criteria
-    .filter((r) => critical.has(r.criterionId) && (r.status === "fail" || r.status === "partial"))
-    .map((r) => r.criterionId);
-  const needsReview = criteria.filter((r) => r.status === "needs_review").map((r) => r.criterionId);
-  const compliance = criticalFailures.length
-    ? "fail"
-    : needsReview.some((id) => critical.has(id))
-      ? "review"
-      : "pass";
+  const totals = summarize(rubric, criteria);
 
   const validUtt = (id: number | null) => (id !== null && byUtt.has(id) ? id : null);
   const labels = new Map((rubric.extract ?? []).map((f) => [f.id, f.label]));
@@ -88,11 +74,7 @@ export function assemble(
   return {
     rubricId: rubric.id,
     rubricVersion: rubric.version,
-    score,
-    passed: compliance === "pass" && score >= rubric.passThreshold,
-    compliance,
-    criticalFailures,
-    needsReview,
+    ...totals,
     criteria,
     metrics,
     summary: review?.summary ?? null,
@@ -112,6 +94,28 @@ export function assemble(
     aiError,
     scoredAt: new Date().toISOString(),
   };
+}
+
+/**
+ * Score, pass/fail and compliance gate from a list of graded criteria.
+ * Shared by automatic scoring and by human review, so both use identical maths.
+ */
+export function summarize(
+  rubric: Rubric,
+  criteria: CriterionResult[],
+): Pick<ScoreResult, "score" | "passed" | "compliance" | "criticalFailures" | "needsReview"> {
+  const counted = criteria.filter((r) => r.status === "pass" || r.status === "partial" || r.status === "fail");
+  const max = counted.reduce((s, r) => s + r.maxPoints, 0);
+  const earned = counted.reduce((s, r) => s + r.earned, 0);
+  const score = max > 0 ? Math.round((earned / max) * 100) : 0;
+
+  const critical = new Set(rubric.criteria.filter((c) => c.severity === "critical").map((c) => c.id));
+  const criticalFailures = criteria
+    .filter((r) => critical.has(r.criterionId) && (r.status === "fail" || r.status === "partial"))
+    .map((r) => r.criterionId);
+  const needsReview = criteria.filter((r) => r.status === "needs_review").map((r) => r.criterionId);
+  const compliance = criticalFailures.length ? "fail" : needsReview.some((id) => critical.has(id)) ? "review" : "pass";
+  return { score, passed: compliance === "pass" && score >= rubric.passThreshold, compliance, criticalFailures, needsReview };
 }
 
 // ---------------------------------------------------------------------------

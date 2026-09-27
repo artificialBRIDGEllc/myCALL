@@ -66,6 +66,20 @@ It also ships with a **general sales rubric**. You can add your own rubrics as J
 - The AI reviewer only sees the transcript. MBI, SSN, phone numbers, card numbers, emails and dates are redacted first.
 - Deepgram and Anthropic keys stay on the server. Browsers and the extension never see them.
 
+## Human review and calibration
+
+Automatic grading is a first pass. People make the final call, and their decisions tune the system.
+
+1. **Grade what's open.** Every call lists the items the automatic grader couldn't decide. Without an AI reviewer that's all the judgment skills; with one it's only the uncertain ones. A reviewer picks Pass / Partial / Fail / N/A and must write a note.
+2. **Override anything.** Every automatic grade has an "Override" option. The original grade stays visible next to the human one, and the score and compliance gate are recalculated.
+3. **Sign off & lock.** This is only possible once nothing is left open. A locked call can't be edited, rescored or deleted. Reopening it requires a reason.
+4. **Audit trail.** Every decision, sign-off and reopen is logged with who, when and why. The log is append-only at the database level, and it's included in the evidence export alongside the untouched automatic result.
+5. **Calibration** (`/#/calibration`). For each criterion, it shows how often reviewers agreed with the automatic grade on signed-off calls, plus false alarms (flagged, but a reviewer cleared it) and misses (passed, but a reviewer failed it). It also suggests what to tune. Use it to tighten phrase patterns until the automatic grade can be trusted.
+
+Reviewer names are entered on the page and remembered per browser. There are no user accounts yet, so names aren't verified. Put SSO in front of the app if attribution must be authenticated.
+
+API: `PUT/DELETE /api/calls/:id/review/:criterionId`, `POST /api/calls/:id/lock`, `POST /api/calls/:id/unlock`, `GET /api/calibration/:rubricId`.
+
 ## Run it
 
 Requires Node 22.13 or newer.
@@ -133,11 +147,12 @@ It exits non-zero if any call fails.
 ## Tests
 
 ```bash
-npm test                          # 36 unit + integration tests (engine, importers, API, live WebSocket with a fake Deepgram)
+npm test                          # 45 unit + integration tests (engine, importers, API, live WebSocket with a fake Deepgram)
 npm run typecheck
 node scripts/e2e-smoke.mjs        # browser walkthrough (needs a running server)
 node scripts/capture-smoke.mjs    # real browser mic → worklet → WebSocket → WAV pipeline with a fake Deepgram
 node scripts/extension-smoke.mjs  # loads the extension in Chromium
+node scripts/review-smoke.mjs     # grade, override, sign off and calibrate in Chromium (after npm run build)
 ```
 
 ## What's verified, and what isn't yet
@@ -195,7 +210,6 @@ myCALL was rebuilt from scratch in one TypeScript stack, carrying forward the be
 - GoHighLevel push of extracted fields (port the client from Callcomplu).
 - SSO and multi-org.
 - Manager dashboards with per-agent trends.
-- Human review workflow: approve or override an item, then lock it.
 - Chrome Web Store listing.
 
 ## License

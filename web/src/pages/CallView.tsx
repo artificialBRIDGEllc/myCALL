@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CallDetail, CriterionResult, Evidence, Rubric, Utterance } from "../../../src/core/types.js";
-import { api } from "../api";
+import type { CallDetail, CriterionResult, Evidence, ReviewedStatus, ReviewEvent, Rubric, Utterance } from "../../../src/core/types.js";
+import { api, getReviewer, setReviewer } from "../api";
 import { clock, ComplianceBadge, cx, ErrorBox, ScoreRing, Spinner, Stat, StatusChip } from "../components/ui";
 
 export function CallView({ id }: { id: string }) {
@@ -106,6 +106,8 @@ export function CallView({ id }: { id: string }) {
       )}
       {call.status === "error" && <ErrorBox message={call.error ?? "Processing failed."} />}
 
+      {r && <ReviewBar call={call} rubric={rubric} onChange={setCall} onError={setError} />}
+
       {r && (
         <>
           {/* Verdict */}
@@ -172,7 +174,7 @@ export function CallView({ id }: { id: string }) {
                     </div>
                     <div className="space-y-3">
                       {items.map((c) => (
-                        <CriterionCard key={c.criterionId} result={c} rubric={rubric} onJump={jump} />
+                        <CriterionCard key={c.criterionId} result={c} rubric={rubric} onJump={jump} call={call} onChange={setCall} />
                       ))}
                     </div>
                   </section>
@@ -277,7 +279,8 @@ function nameOf(rubric: Rubric | undefined, id: string) {
 
 function Actions({ call, rubrics, onRescore }: { call: CallDetail; rubrics: Rubric[]; onRescore: (b: { rubricId?: string; swapRoles?: boolean }) => void }) {
   const [rubricId, setRubricId] = useState(call.rubricId);
-  const busy = call.status === "processing";
+  const locked = Boolean(call.review?.locked);
+  const busy = call.status === "processing" || locked;
   return (
     <div className="no-print flex flex-wrap items-center gap-2">
       <select className="input w-auto" value={rubricId} onChange={(e) => setRubricId(e.target.value)} aria-label="Rubric">
@@ -307,6 +310,8 @@ function Actions({ call, rubrics, onRescore }: { call: CallDetail; rubrics: Rubr
       )}
       <button
         className="btn-ghost text-rose-600"
+        disabled={locked}
+        title={locked ? "Signed-off calls can't be deleted" : undefined}
         onClick={async () => {
           if (!window.confirm("Delete this call, its transcript and recording? This cannot be undone.")) return;
           await api.remove(call.id);
@@ -319,9 +324,21 @@ function Actions({ call, rubrics, onRescore }: { call: CallDetail; rubrics: Rubr
   );
 }
 
-function CriterionCard({ result: c, rubric, onJump }: { result: CriterionResult; rubric: Rubric | undefined; onJump: (id: number, start?: number) => void }) {
+function CriterionCard({
+  result: c,
+  rubric,
+  onJump,
+  call,
+  onChange,
+}: {
+  result: CriterionResult;
+  rubric: Rubric | undefined;
+  onJump: (id: number, start?: number) => void;
+  call: CallDetail;
+  onChange: (c: CallDetail) => void;
+}) {
   const def = rubric?.criteria.find((x) => x.id === c.criterionId);
-  const [open, setOpen] = useState(c.status !== "pass");
+  const [open, setOpen] = useState(c.status !== "pass" || Boolean(c.review));
   return (
     <div className={cx("rounded-xl border p-3", c.status === "fail" ? "border-rose-200 dark:border-rose-900" : "border-slate-200 dark:border-slate-800")}>
       <button className="flex w-full items-start gap-3 text-left" onClick={() => setOpen(!open)} aria-expanded={open}>
@@ -357,11 +374,232 @@ function CriterionCard({ result: c, rubric, onJump }: { result: CriterionResult;
           ))}
           {c.coaching && <div className="rounded-lg bg-brand-50 px-3 py-2 text-brand-900 dark:bg-brand-900/30 dark:text-brand-100">Coaching: {c.coaching}</div>}
           <div className="text-xs text-slate-400">
-            {def?.citation && <>Rule: {def.citation} · </>}Graded by {c.source === "rules" ? "phrase rules" : c.source === "llm" ? "AI reviewer" : "phrase rules + AI reviewer"}
+            {def?.citation && <>Rule: {def.citation} · </>}Graded by {SOURCE_LABEL[c.source]}
           </div>
+          <ReviewControls c={c} call={call} onChange={onChange} />
         </div>
       )}
     </div>
+  );
+}
+
+const SOURCE_LABEL: Record<CriterionResult["source"], string> = {
+  rules: "phrase rules",
+  llm: "AI reviewer",
+  "rules+llm": "phrase rules + AI reviewer",
+  human: "a human reviewer",
+};
+
+const STATUS_WORD: Record<string, string> = { pass: "Pass", partial: "Partial", fail: "Fail", na: "N/A", needs_review: "Needs review" };
+
+/** Grade or override one item, or undo a previous decision. Every change needs a name and a note. */
+function ReviewControls({ c, call, onChange }: { c: CriterionResult; call: CallDetail; onChange: (c: CallDetail) => void }) {
+  const locked = Boolean(call.review?.locked);
+  const [editing, setEditing] = useState(c.status === "needs_review");
+  const [status, setStatus] = useState<ReviewedStatus | null>(null);
+  const [fraction, setFraction] = useState(50);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const reviewer = () => {
+    let name = getReviewer();
+    if (!name) {
+      name = window.prompt("Your name (shown on review decisions):")?.trim() ?? "";
+      if (name) setReviewer(name);
+    }
+    return name;
+  };
+
+  const run = async (fn: (name: string) => Promise<CallDetail>) => {
+    const name = reviewer();
+    if (!name) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      onChange(await fn(name));
+      setEditing(false);
+      setStatus(null);
+      setNote("");
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="no-print space-y-2 border-t border-slate-100 pt-2 dark:border-slate-800">
+      {c.review && (
+        <div className="rounded-lg bg-violet-50 px-3 py-2 text-violet-900 dark:bg-violet-950/50 dark:text-violet-100">
+          <div className="text-xs">
+            Automatic grade: <b>{STATUS_WORD[c.review.auto.status]}</b>
+            {c.review.auto.status !== "needs_review" && <> ({SOURCE_LABEL[c.review.auto.source]})</>} → changed to <b>{STATUS_WORD[c.status]}</b> by{" "}
+            <b>{c.review.reviewer}</b> · {new Date(c.review.at).toLocaleString()}
+          </div>
+          {!locked && (
+            <button className="mt-1 text-xs font-semibold underline" disabled={busy} onClick={() => void run((name) => api.undoReview(call.id, c.criterionId, name))}>
+              Undo — go back to the automatic grade
+            </button>
+          )}
+        </div>
+      )}
+      {!locked && !editing && (
+        <button className="text-xs font-semibold text-brand-700 hover:underline dark:text-brand-100" onClick={() => setEditing(true)}>
+          {c.status === "needs_review" ? "Grade this item" : c.review ? "Change decision" : "Disagree? Override this grade"}
+        </button>
+      )}
+      {!locked && editing && (
+        <div className="space-y-2 rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+          <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Your grade">
+            {(["pass", "partial", "fail", "na"] as const).map((s) => (
+              <button
+                key={s}
+                role="radio"
+                aria-checked={status === s}
+                className={cx("rounded-lg px-3 py-1 text-xs font-bold ring-1", status === s ? "bg-brand-600 text-white ring-brand-600" : "ring-slate-300 dark:ring-slate-700")}
+                onClick={() => setStatus(s)}
+              >
+                {STATUS_WORD[s]}
+              </button>
+            ))}
+          </div>
+          {status === "partial" && (
+            <label className="flex items-center gap-2 text-xs">
+              Credit
+              <input type="range" min={10} max={90} step={10} value={fraction} onChange={(e) => setFraction(Number(e.target.value))} />
+              <span className="tabular-nums">{fraction}%</span>
+            </label>
+          )}
+          <textarea className="input min-h-16 text-xs" placeholder="Why? (required — this goes in the audit log)" value={note} onChange={(e) => setNote(e.target.value)} />
+          <div className="flex items-center gap-2">
+            <button
+              className="btn-primary px-3 py-1 text-xs"
+              disabled={!status || !note.trim() || busy}
+              onClick={() => void run((name) => api.review(call.id, c.criterionId, { status: status!, fraction: status === "partial" ? fraction / 100 : undefined, note, reviewer: name }))}
+            >
+              {busy && <Spinner />} Save decision
+            </button>
+            {c.status !== "needs_review" && (
+              <button className="text-xs text-slate-500 hover:underline" onClick={() => setEditing(false)}>
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {err && <div className="text-xs text-rose-600">{err}</div>}
+    </div>
+  );
+}
+
+/** Review status of the whole call: open items, sign-off, reopen, and the audit trail. */
+function ReviewBar({ call, rubric, onChange, onError }: { call: CallDetail; rubric: Rubric | undefined; onChange: (c: CallDetail) => void; onError: (m: string) => void }) {
+  const [name, setName] = useState(getReviewer());
+  const [busy, setBusy] = useState(false);
+  const [showLog, setShowLog] = useState(false);
+  const open = call.result?.needsReview ?? [];
+  const locked = Boolean(call.review?.locked);
+  const decisions = Object.keys(call.review?.overrides ?? {}).length;
+
+  const act = async (fn: () => Promise<CallDetail>) => {
+    if (!name.trim()) return onError("Enter your name first — review decisions are signed.");
+    setReviewer(name.trim());
+    setBusy(true);
+    try {
+      onChange(await fn());
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={cx("card p-4", locked ? "border-emerald-300 dark:border-emerald-800" : open.length ? "border-violet-300 dark:border-violet-800" : "")}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm">
+          {locked ? (
+            <>
+              <span className="font-bold text-emerald-700 dark:text-emerald-300">✓ Signed off</span> by {call.review!.lockedBy} · {new Date(call.review!.lockedAt!).toLocaleString()}
+              <div className="text-xs text-slate-500">Locked: grades can't be changed, and the call can't be rescored or deleted.</div>
+            </>
+          ) : open.length ? (
+            <>
+              <span className="font-bold text-violet-700 dark:text-violet-300">{open.length} item{open.length > 1 ? "s" : ""} need a human decision</span>
+              <div className="text-xs text-slate-500">{open.map((id) => nameOf(rubric, id)).join(" · ")}</div>
+            </>
+          ) : (
+            <>
+              <span className="font-bold">Ready to sign off</span>
+              <div className="text-xs text-slate-500">
+                {decisions ? `${decisions} grade${decisions > 1 ? "s" : ""} changed by a reviewer. ` : ""}Signing off confirms every grade on this call and locks it.
+              </div>
+            </>
+          )}
+        </div>
+        <div className="no-print flex flex-wrap items-center gap-2">
+          <input
+            className="input w-40 text-xs"
+            placeholder="Your name"
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              setReviewer(e.target.value.trim());
+            }}
+            aria-label="Reviewer name"
+          />
+          {locked ? (
+            <button
+              className="btn-ghost"
+              disabled={busy}
+              onClick={() => {
+                const why = window.prompt("Reason for reopening this signed-off call (recorded in the audit log):")?.trim();
+                if (why) void act(() => api.unlock(call.id, name.trim(), why));
+              }}
+            >
+              Reopen
+            </button>
+          ) : (
+            <button className="btn-primary" disabled={busy || open.length > 0} title={open.length ? "Grade the open items first" : undefined} onClick={() => void act(() => api.lock(call.id, name.trim(), ""))}>
+              {busy && <Spinner />} Sign off & lock
+            </button>
+          )}
+          {call.reviewLog.length > 0 && (
+            <button className="text-xs font-semibold text-slate-500 hover:underline" onClick={() => setShowLog(!showLog)}>
+              {showLog ? "Hide" : "Show"} audit log ({call.reviewLog.length})
+            </button>
+          )}
+        </div>
+      </div>
+      {showLog && <ReviewLog events={call.reviewLog} rubric={rubric} />}
+    </div>
+  );
+}
+
+const ACTION_WORD: Record<ReviewEvent["action"], string> = { override: "Graded", revert: "Undid", lock: "Signed off", unlock: "Reopened" };
+
+function ReviewLog({ events, rubric }: { events: ReviewEvent[]; rubric: Rubric | undefined }) {
+  return (
+    <ol className="mt-3 space-y-1.5 border-t border-slate-100 pt-3 text-xs dark:border-slate-800">
+      {[...events].reverse().map((e) => (
+        <li key={e.id} className="flex flex-wrap gap-x-2">
+          <span className="text-slate-400 tabular-nums">{new Date(e.at).toLocaleString()}</span>
+          <b>{e.reviewer}</b>
+          <span>
+            {ACTION_WORD[e.action]}
+            {e.criterionId && <> “{nameOf(rubric, e.criterionId)}”</>}
+            {e.fromStatus && e.toStatus && (
+              <>
+                {" "}
+                {STATUS_WORD[e.fromStatus]} → {STATUS_WORD[e.toStatus]}
+              </>
+            )}
+          </span>
+          <span className="text-slate-500 italic">— {e.note}</span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
