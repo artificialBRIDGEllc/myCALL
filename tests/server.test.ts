@@ -10,13 +10,35 @@ import type { AppConfig } from "../src/server/config.js";
 import { header } from "../src/server/wav.js";
 
 /** A stand-in for Deepgram: REST prerecorded + WebSocket live, speaking its real message shapes. */
-function startFakeDeepgram(): Promise<{ url: string; close: () => Promise<void>; lastQuery: () => string }> {
+function startFakeDeepgram(): Promise<{ url: string; close: () => Promise<void>; lastQuery: () => string; failRest: (on: boolean) => void }> {
   let lastQuery = "";
+  let restFails = false;
   const server = http.createServer((req, res) => {
     lastQuery = req.url ?? "";
     req.resume();
     req.on("end", () => {
+      if (restFails) {
+        res.statusCode = 503;
+        res.end("unavailable");
+        return;
+      }
       res.setHeader("Content-Type", "application/json");
+      if (lastQuery.includes("multichannel=true")) {
+        // Whole-file transcript of a stereo live recording: it also catches the line the stream missed.
+        res.end(
+          JSON.stringify({
+            results: {
+              channels: [{}, {}],
+              utterances: [
+                { start: 0, end: 3, channel: 0, transcript: "Hello, this is Sam, a licensed agent.", confidence: 0.98 },
+                { start: 3, end: 6, channel: 0, transcript: "This call is being recorded. Honestly you have to decide today.", confidence: 0.97 },
+                { start: 7, end: 9, channel: 1, transcript: "Um, okay, I guess.", confidence: 0.95 },
+              ],
+            },
+          }),
+        );
+        return;
+      }
       res.end(
         JSON.stringify({
           results: {
@@ -52,7 +74,7 @@ function startFakeDeepgram(): Promise<{ url: string; close: () => Promise<void>;
   return new Promise((resolve) =>
     server.listen(0, "127.0.0.1", () => {
       const port = (server.address() as { port: number }).port;
-      resolve({ url: `http://127.0.0.1:${port}`, lastQuery: () => lastQuery, close: () => new Promise((r) => { wss.close(); server.close(() => r()); }) });
+      resolve({ url: `http://127.0.0.1:${port}`, lastQuery: () => lastQuery, failRest: (on) => (restFails = on), close: () => new Promise((r) => { wss.close(); server.close(() => r()); }) });
     }),
   );
 }
@@ -242,6 +264,9 @@ describe("live calls", () => {
     expect(msgs.some((m) => m.type === "interim")).toBe(true);
     const final = msgs.find((m) => m.type === "final") as Extract<LiveServerMessage, { type: "final" }>;
     expect(final.result.criteria.find((c) => c.criterionId === "no_pressure")!.status).toBe("fail");
+    // The final grade uses the whole-recording transcript, which caught what the stream missed.
+    expect(msgs.some((m) => m.type === "alert" && m.alert.criterionId === "recording_notice")).toBe(false);
+    expect(final.result.criteria.find((c) => c.criterionId === "recording_notice")!.status).toBe("pass");
 
     // The call was recorded as a playable stereo WAV.
     const call = await waitScored(final.callId);
@@ -249,6 +274,25 @@ describe("live calls", () => {
     expect(call.hasAudio).toBe(true);
     const wav = Buffer.from(await (await fetch(`${base}/api/calls/${call.id}/audio`, { headers: auth })).arrayBuffer());
     expect(wav.subarray(0, 44)).toEqual(header(16000, 2, pcm.length));
+    expect(call.transcript!.utterances.map((u) => [u.role, u.text])).toEqual([
+      ["agent", "Hello, this is Sam, a licensed agent."],
+      ["agent", "This call is being recorded. Honestly you have to decide today."],
+      ["customer", "Um, okay, I guess."],
+    ]);
+  });
+
+  it("falls back to the streamed transcript if re-transcribing the recording fails", async () => {
+    fake.failRest(true);
+    try {
+      const pcm = Buffer.alloc(16000 * 2 * 2 * 0.5);
+      const msgs = await collectLive({ type: "start", rubricId: "medicare-tpmo", sampleRate: 16000, channels: 2 }, [pcm]);
+      const final = msgs.find((m) => m.type === "final") as Extract<LiveServerMessage, { type: "final" }>;
+      expect(final.result.criteria.find((c) => c.criterionId === "no_pressure")!.status).toBe("fail");
+      const call = await waitScored(final.callId);
+      expect(call.transcript!.utterances.map((u) => u.text)).toEqual(["Hello, this is Sam, a licensed agent. Honestly you have to decide today.", "Um, okay, I guess."]);
+    } finally {
+      fake.failRest(false);
+    }
   });
 
   it("runs the demo call without a microphone or STT", async () => {
