@@ -1,11 +1,24 @@
 import fs from "node:fs/promises";
-import type { Rubric, Transcript } from "../core/types.js";
+import type { Calibration, CallDetail, CallReview, CriterionOverride, ReviewEvent, ReviewedStatus, Rubric, ScoreResult, Transcript } from "../core/types.js";
+import { applyReview, calibrate, emptyReview } from "../engine/review.js";
 import { scoreCall } from "../engine/score.js";
 import { builtInRubrics } from "../rubrics/index.js";
 import { applyRoleMap, swapRoles } from "../stt/roles.js";
 import { transcribeRecording, wavChannels } from "../stt/deepgram.js";
 import type { AppConfig } from "./config.js";
-import type { Store } from "./db.js";
+import type { FinalSummary, StoredCall, Store } from "./db.js";
+
+/** A review request that can't be applied; `status` is the HTTP status to return. */
+export class ReviewError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const REVIEWED: ReadonlySet<string> = new Set<ReviewedStatus>(["pass", "partial", "fail", "na"]);
 
 /**
  * Background processing for recorded calls: transcribe -> score -> save.
@@ -87,7 +100,152 @@ export class Pipeline {
 
   private async score(callId: string, rubric: Rubric, transcript: Transcript): Promise<void> {
     const result = await scoreCall({ rubric, transcript, reviewer: this.config.reviewer });
-    this.store.saveResult(callId, result);
+    this.saveScored(callId, rubric, result);
+  }
+
+  // -------------------------------------------------------------------------
+  // Scoring results + human review
+  // -------------------------------------------------------------------------
+
+  /**
+   * Store a fresh automatic result. Existing overrides carry over when the
+   * rubric is unchanged (a reviewer's decision shouldn't vanish on a rescore);
+   * they are dropped, with a log entry, if the call was rescored against a
+   * different rubric. Returns the final (reviewed) result.
+   */
+  saveScored(callId: string, rubric: Rubric, auto: ScoreResult): ScoreResult {
+    let review = this.store.getCall(callId)?.review ?? null;
+    if (review && review.rubricId !== rubric.id) {
+      const dropped = Object.keys(review.overrides).length;
+      if (dropped) {
+        this.store.addReviewEvent({
+          callId,
+          action: "revert",
+          criterionId: null,
+          fromStatus: null,
+          toStatus: null,
+          reviewer: "system",
+          note: `Rescored with rubric "${rubric.id}"; ${dropped} review decision(s) made against "${review.rubricId}" were cleared.`,
+          at: new Date().toISOString(),
+        });
+      }
+      review = null;
+    }
+    const final = applyReview(rubric, auto, review);
+    this.store.saveResult(callId, auto, review, summaryOf(final, review));
+    return final;
+  }
+
+  /** Everything the call page needs, with human overrides applied to the result. */
+  detail(callId: string): CallDetail | null {
+    const call = this.store.getCall(callId);
+    if (!call) return null;
+    return this.toDetail(call);
+  }
+
+  setOverride(callId: string, criterionId: string, input: { status: string; fraction?: number; note: string; reviewer: string }): CallDetail {
+    const { call, rubric, auto, review } = this.editable(callId);
+    const criterion = auto.criteria.find((c) => c.criterionId === criterionId);
+    if (!criterion || !rubric.criteria.some((c) => c.id === criterionId)) throw new ReviewError(404, "That item isn't part of this call's rubric.");
+    if (!REVIEWED.has(input.status)) throw new ReviewError(400, "Choose pass, partial, fail or N/A.");
+    const note = input.note.trim();
+    const reviewer = input.reviewer.trim();
+    if (!reviewer) throw new ReviewError(400, "Add your name so the decision is attributed.");
+    if (!note) throw new ReviewError(400, "Add a short note explaining the decision.");
+    const override: CriterionOverride = {
+      status: input.status as ReviewedStatus,
+      ...(input.status === "partial" && input.fraction !== undefined ? { fraction: Math.min(0.9, Math.max(0.1, input.fraction)) } : {}),
+      note,
+      reviewer,
+      at: new Date().toISOString(),
+    };
+    const before = review.overrides[criterionId]?.status ?? criterion.status;
+    review.overrides[criterionId] = override;
+    this.log(callId, "override", criterionId, before, override.status, reviewer, note);
+    return this.commitReview(call, rubric, auto, review);
+  }
+
+  clearOverride(callId: string, criterionId: string, reviewer: string, note: string): CallDetail {
+    const { call, rubric, auto, review } = this.editable(callId);
+    const prior = review.overrides[criterionId];
+    if (!prior) throw new ReviewError(404, "There's no review decision on that item to undo.");
+    if (!reviewer.trim()) throw new ReviewError(400, "Add your name so the change is attributed.");
+    delete review.overrides[criterionId];
+    this.log(callId, "revert", criterionId, null, null, reviewer.trim(), note.trim() || `Undid "${prior.status}" by ${prior.reviewer}; back to the automatic grade.`);
+    return this.commitReview(call, rubric, auto, review);
+  }
+
+  /** Sign off: only once nothing is left waiting for a person. Locked calls can't be edited or rescored. */
+  lock(callId: string, reviewer: string, note: string): CallDetail {
+    const { call, rubric, auto, review } = this.editable(callId);
+    if (!reviewer.trim()) throw new ReviewError(400, "Add your name to sign off.");
+    const final = applyReview(rubric, auto, review);
+    if (final.needsReview.length) {
+      throw new ReviewError(409, `Grade the ${final.needsReview.length} item(s) still waiting for review before signing off.`);
+    }
+    review.locked = true;
+    review.lockedBy = reviewer.trim();
+    review.lockedAt = new Date().toISOString();
+    this.log(callId, "lock", null, null, null, review.lockedBy, note.trim() || "Signed off.");
+    return this.commitReview(call, rubric, auto, review);
+  }
+
+  /** Reopen a signed-off call. A reason is required and recorded in the audit log. */
+  unlock(callId: string, reviewer: string, note: string): CallDetail {
+    const call = this.store.getCall(callId);
+    if (!call) throw new ReviewError(404, "Call not found.");
+    if (!call.review?.locked) throw new ReviewError(409, "This call isn't signed off.");
+    if (!reviewer.trim() || !note.trim()) throw new ReviewError(400, "Add your name and the reason for reopening.");
+    const rubric = this.rubric(call.review.rubricId);
+    if (!rubric || !call.autoResult) throw new ReviewError(409, "This call's rubric no longer exists.");
+    const review: CallReview = { ...call.review, locked: false, lockedBy: null, lockedAt: null };
+    this.log(callId, "unlock", null, null, null, reviewer.trim(), note.trim());
+    return this.commitReview(call, rubric, call.autoResult, review);
+  }
+
+  isLocked(callId: string): boolean {
+    return Boolean(this.store.getCall(callId)?.review?.locked);
+  }
+
+  calibration(rubricId: string): Calibration | null {
+    const rubric = this.rubric(rubricId);
+    return rubric ? calibrate(rubric, this.store.lockedCalls(rubricId)) : null;
+  }
+
+  private editable(callId: string): { call: StoredCall; rubric: Rubric; auto: ScoreResult; review: CallReview } {
+    const call = this.store.getCall(callId);
+    if (!call) throw new ReviewError(404, "Call not found.");
+    if (call.status !== "scored" || !call.autoResult) throw new ReviewError(409, "This call hasn't finished scoring yet.");
+    const rubric = this.rubric(call.autoResult.rubricId);
+    if (!rubric) throw new ReviewError(409, "This call's rubric no longer exists.");
+    const review = call.review && call.review.rubricId === rubric.id ? structuredClone(call.review) : emptyReview(rubric.id);
+    if (review.locked) throw new ReviewError(409, `Signed off by ${review.lockedBy}. Reopen it to make changes.`);
+    return { call, rubric, auto: call.autoResult, review };
+  }
+
+  private commitReview(call: StoredCall, rubric: Rubric, auto: ScoreResult, review: CallReview): CallDetail {
+    const final = applyReview(rubric, auto, review);
+    this.store.saveReview(call.id, review, summaryOf(final, review));
+    return this.detail(call.id)!;
+  }
+
+  private log(
+    callId: string,
+    action: ReviewEvent["action"],
+    criterionId: string | null,
+    fromStatus: ReviewEvent["fromStatus"],
+    toStatus: ReviewEvent["toStatus"],
+    reviewer: string,
+    note: string,
+  ): void {
+    this.store.addReviewEvent({ callId, action, criterionId, fromStatus, toStatus, reviewer, note, at: new Date().toISOString() });
+  }
+
+  private toDetail(call: StoredCall): CallDetail {
+    const { autoResult, audioPath: _a, audioMime: _m, ...rest } = call;
+    const rubric = autoResult ? this.rubric(autoResult.rubricId) : undefined;
+    const result = autoResult && rubric ? applyReview(rubric, autoResult, call.review) : autoResult;
+    return { ...rest, result, reviewLog: this.store.reviewLog(call.id) };
   }
 
   private enqueue(callId: string, job: () => Promise<void>): void {
@@ -112,4 +270,14 @@ export class Pipeline {
       });
     }
   }
+}
+
+function summaryOf(final: ScoreResult, review: CallReview | null): FinalSummary {
+  const touched = review && (review.locked || Object.keys(review.overrides).length > 0);
+  return {
+    score: final.score,
+    compliance: final.compliance,
+    openReviewItems: final.needsReview.length,
+    reviewState: review?.locked ? "locked" : touched ? "in_review" : "auto",
+  };
 }

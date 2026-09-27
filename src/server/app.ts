@@ -4,7 +4,7 @@ import path from "node:path";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { parseRubric } from "../engine/rubric-schema.js";
 import { builtInRubrics } from "../rubrics/index.js";
@@ -12,7 +12,7 @@ import { importTranscript, ImportError } from "../stt/import.js";
 import type { AppConfig } from "./config.js";
 import { Store } from "./db.js";
 import { handleLiveSocket } from "./live.js";
-import { Pipeline } from "./pipeline.js";
+import { Pipeline, ReviewError } from "./pipeline.js";
 
 const AUDIO_EXT = /\.(wav|mp3|m4a|mp4|aac|ogg|oga|opus|webm|flac|wma|amr|mpeg|mpga)$/i;
 const TRANSCRIPT_EXT = /\.(txt|vtt|srt|json)$/i;
@@ -27,6 +27,14 @@ const ImportBody = z.object({
 
 /** Paths that may be opened with a signed URL instead of the Authorization header. */
 const SIGNABLE = /^\/api\/(calls\/[0-9a-f-]{36}\/(audio|export)|live)$/;
+
+const OverrideBody = z.object({
+  status: z.enum(["pass", "partial", "fail", "na"]),
+  fraction: z.number().min(0).max(1).optional(),
+  note: z.string().max(2000),
+  reviewer: z.string().max(120),
+});
+const SignBody = z.object({ reviewer: z.string().max(120), note: z.string().max(2000).optional() });
 
 const RescoreBody = z.object({ rubricId: z.string().max(64).optional(), swapRoles: z.boolean().optional() });
 
@@ -78,7 +86,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
     if (origin?.startsWith("chrome-extension://") && req.url.startsWith("/api/")) {
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
-      reply.header("Access-Control-Allow-Methods", "GET, POST, DELETE");
+      reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
       reply.header("Vary", "Origin");
       if (req.method === "OPTIONS") return reply.code(204).send();
     }
@@ -137,12 +145,46 @@ export async function buildApp(config: AppConfig): Promise<App> {
   // ---- Calls ----
   app.get("/api/calls", async () => store.listCalls());
 
-  app.get<{ Params: { id: string } }>("/api/calls/:id", async (req, reply) => {
-    const call = store.getCall(req.params.id);
-    if (!call) return reply.code(404).send({ error: "Call not found" });
-    const { audioPath: _a, audioMime: _m, ...rest } = call;
-    return rest;
+  app.get<{ Params: { id: string } }>("/api/calls/:id", async (req, reply) => pipeline.detail(req.params.id) ?? reply.code(404).send({ error: "Call not found" }));
+
+  // ---- Human review ----
+  const reviewRoute = async (reply: FastifyReply, fn: () => unknown) => {
+    try {
+      return fn();
+    } catch (err) {
+      if (err instanceof ReviewError) return reply.code(err.status).send({ error: err.message });
+      throw err;
+    }
+  };
+
+  /** Grade or override one item. Body: {status: pass|partial|fail|na, fraction?, note, reviewer}. */
+  app.put<{ Params: { id: string; criterionId: string } }>("/api/calls/:id/review/:criterionId", async (req, reply) => {
+    const body = OverrideBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "Send {status, note, reviewer} — status is pass, partial, fail or na." });
+    return reviewRoute(reply, () => pipeline.setOverride(req.params.id, req.params.criterionId, body.data));
   });
+
+  /** Undo a review decision (back to the automatic grade). Body: {reviewer, note?}. */
+  app.delete<{ Params: { id: string; criterionId: string } }>("/api/calls/:id/review/:criterionId", async (req, reply) => {
+    const body = SignBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "Send {reviewer}." });
+    return reviewRoute(reply, () => pipeline.clearOverride(req.params.id, req.params.criterionId, body.data.reviewer, body.data.note ?? ""));
+  });
+
+  app.post<{ Params: { id: string } }>("/api/calls/:id/lock", async (req, reply) => {
+    const body = SignBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "Send {reviewer, note?}." });
+    return reviewRoute(reply, () => pipeline.lock(req.params.id, body.data.reviewer, body.data.note ?? ""));
+  });
+
+  app.post<{ Params: { id: string } }>("/api/calls/:id/unlock", async (req, reply) => {
+    const body = SignBody.safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "Send {reviewer, note}." });
+    return reviewRoute(reply, () => pipeline.unlock(req.params.id, body.data.reviewer, body.data.note ?? ""));
+  });
+
+  /** How often reviewers agree with the automatic grader, per criterion (signed-off calls only). */
+  app.get<{ Params: { rubricId: string } }>("/api/calibration/:rubricId", async (req, reply) => pipeline.calibration(req.params.rubricId) ?? reply.code(404).send({ error: "Rubric not found" }));
 
   /** Upload a recording (multipart "file") or a transcript file; fields: title, agentName, rubricId, separateChannels. */
   app.post("/api/calls", async (req, reply) => {
@@ -232,6 +274,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
     const call = store.getCall(req.params.id);
     if (!call) return reply.code(404).send({ error: "Call not found" });
     if (call.status === "processing") return reply.code(409).send({ error: "This call is still being processed." });
+    if (call.review?.locked) return reply.code(409).send({ error: "This call is signed off. Reopen it before rescoring." });
     const rubric = pipeline.rubric(body.data.rubricId ?? call.rubricId);
     if (!rubric) return reply.code(400).send({ error: "Unknown rubric" });
     pipeline.rescore(call.id, rubric, Boolean(body.data.swapRoles));
@@ -239,6 +282,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   });
 
   app.delete<{ Params: { id: string } }>("/api/calls/:id", async (req, reply) => {
+    if (pipeline.isLocked(req.params.id)) return reply.code(409).send({ error: "Signed-off calls can't be deleted. Reopen it first." });
     const audio = store.deleteCall(req.params.id);
     if (audio === null) return reply.code(404).send({ error: "Call not found" });
     if (audio) await fs.promises.rm(audio, { force: true });
@@ -254,11 +298,12 @@ export async function buildApp(config: AppConfig): Promise<App> {
 
   /** Evidence packet: the full scored record plus a SHA-256 fingerprint for audit files. */
   app.get<{ Params: { id: string } }>("/api/calls/:id/export", async (req, reply) => {
-    const call = store.getCall(req.params.id);
+    const call = pipeline.detail(req.params.id);
     if (!call?.result) return reply.code(404).send({ error: "No scored result for this call" });
-    const { audioPath: _a, audioMime: _m, ...record } = call;
-    const rubric = pipeline.rubric(call.rubricId);
-    const body = { exportedAt: new Date().toISOString(), call: record, rubric };
+    const automatic = store.getCall(call.id)?.autoResult ?? null;
+    const rubric = pipeline.rubric(call.result.rubricId);
+    // Final result, the untouched automatic result, and the full review audit trail.
+    const body = { exportedAt: new Date().toISOString(), call, automaticResult: automatic, rubric };
     const json = JSON.stringify(body, null, 2);
     const sha256 = createHash("sha256").update(json).digest("hex");
     reply.header("Content-Disposition", `attachment; filename="mycall-${call.id}.json"`);

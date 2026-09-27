@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, getToken, setToken, type ServerConfig } from "./api";
 import { cx, ErrorBox } from "./components/ui";
+import { CalibrationPage } from "./pages/Calibration";
 import { CallsPage } from "./pages/Calls";
 import { CallView } from "./pages/CallView";
 import { LivePage } from "./pages/Live";
@@ -26,6 +27,7 @@ const NAV = [
   { to: "/new", label: "Score a recording" },
   { to: "/live", label: "Live call" },
   { to: "/rubrics", label: "Rubrics" },
+  { to: "/calibration", label: "Calibration" },
 ];
 
 export function App() {
@@ -97,6 +99,8 @@ export function App() {
           <LivePage config={config} />
         ) : route === "/rubrics" ? (
           <RubricsPage />
+        ) : route === "/calibration" ? (
+          <CalibrationPage />
         ) : (
           <CallsPage />
         )}

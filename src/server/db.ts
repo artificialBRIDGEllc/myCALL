@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { CallDetail, CallRecord, ComplianceStatus, Rubric, ScoreResult, Transcript } from "../core/types.js";
+import type { CallRecord, CallReview, ComplianceStatus, ReviewEvent, ReviewState, Rubric, ScoreResult, Transcript } from "../core/types.js";
 
 /**
  * Storage on SQLite (built into Node 22 — no database server to run or pay for).
@@ -34,6 +34,26 @@ interface CallRow {
   error: string | null;
   transcript_json: string | null;
   result_json: string | null;
+  review_json: string | null;
+  review_state: ReviewState | null;
+  open_review: number | null;
+}
+
+/** A call as stored: the automatic result and the human review are kept separately. */
+export interface StoredCall extends CallRecord {
+  transcript: Transcript | null;
+  autoResult: ScoreResult | null;
+  review: CallReview | null;
+  audioPath: string | null;
+  audioMime: string | null;
+}
+
+/** The headline numbers shown in lists, taken from the final (reviewed) result. */
+export interface FinalSummary {
+  score: number;
+  compliance: ComplianceStatus;
+  openReviewItems: number;
+  reviewState: ReviewState;
 }
 
 export class Store {
@@ -73,7 +93,30 @@ export class Store {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (org_id, id)
       );
+      CREATE TABLE IF NOT EXISTS review_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        org_id TEXT NOT NULL,
+        call_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        criterion_id TEXT,
+        from_status TEXT,
+        to_status TEXT,
+        reviewer TEXT NOT NULL,
+        note TEXT NOT NULL,
+        at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS review_events_call ON review_events (org_id, call_id, id);
+      -- The review log is an audit trail: rows can be added, never changed or removed.
+      CREATE TRIGGER IF NOT EXISTS review_events_no_update BEFORE UPDATE ON review_events
+        BEGIN SELECT RAISE(ABORT, 'review_events is append-only'); END;
+      CREATE TRIGGER IF NOT EXISTS review_events_no_delete BEFORE DELETE ON review_events
+        BEGIN SELECT RAISE(ABORT, 'review_events is append-only'); END;
     `);
+    // Forward-only migrations for databases created before human review existed.
+    const cols = new Set((this.db.prepare(`PRAGMA table_info(calls)`).all() as Array<{ name: string }>).map((c) => c.name));
+    if (!cols.has("review_json")) this.db.exec(`ALTER TABLE calls ADD COLUMN review_json TEXT`);
+    if (!cols.has("review_state")) this.db.exec(`ALTER TABLE calls ADD COLUMN review_state TEXT NOT NULL DEFAULT 'auto'`);
+    if (!cols.has("open_review")) this.db.exec(`ALTER TABLE calls ADD COLUMN open_review INTEGER NOT NULL DEFAULT 0`);
     // A server restart interrupts in-flight jobs; surface them instead of leaving them spinning.
     this.db
       .prepare(`UPDATE calls SET status = 'error', error = 'Interrupted by a server restart — click Rescore.' WHERE status = 'processing'`)
@@ -103,10 +146,51 @@ export class Store {
       .run(JSON.stringify(t), t.durationSec, id, this.orgId);
   }
 
-  saveResult(id: string, r: ScoreResult): void {
+  /** Save a new automatic result plus the review that now applies to it, and the final headline numbers. */
+  saveResult(id: string, auto: ScoreResult, review: CallReview | null, final: FinalSummary): void {
     this.db
-      .prepare(`UPDATE calls SET status = 'scored', result_json = ?, score = ?, compliance = ?, rubric_id = ?, error = NULL WHERE id = ? AND org_id = ?`)
-      .run(JSON.stringify(r), r.score, r.compliance, r.rubricId, id, this.orgId);
+      .prepare(
+        `UPDATE calls SET status = 'scored', result_json = ?, review_json = ?, score = ?, compliance = ?, open_review = ?, review_state = ?,
+         rubric_id = ?, error = NULL WHERE id = ? AND org_id = ?`,
+      )
+      .run(JSON.stringify(auto), review ? JSON.stringify(review) : null, final.score, final.compliance, final.openReviewItems, final.reviewState, auto.rubricId, id, this.orgId);
+  }
+
+  saveReview(id: string, review: CallReview, final: FinalSummary): void {
+    this.db
+      .prepare(`UPDATE calls SET review_json = ?, score = ?, compliance = ?, open_review = ?, review_state = ? WHERE id = ? AND org_id = ?`)
+      .run(JSON.stringify(review), final.score, final.compliance, final.openReviewItems, final.reviewState, id, this.orgId);
+  }
+
+  addReviewEvent(e: Omit<ReviewEvent, "id">): void {
+    this.db
+      .prepare(`INSERT INTO review_events (org_id, call_id, action, criterion_id, from_status, to_status, reviewer, note, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(this.orgId, e.callId, e.action, e.criterionId, e.fromStatus, e.toStatus, e.reviewer, e.note, e.at);
+  }
+
+  reviewLog(callId: string): ReviewEvent[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM review_events WHERE org_id = ? AND call_id = ? ORDER BY id`)
+      .all(this.orgId, callId) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      callId: String(r.call_id),
+      action: r.action as ReviewEvent["action"],
+      criterionId: (r.criterion_id as string | null) ?? null,
+      fromStatus: (r.from_status as ReviewEvent["fromStatus"]) ?? null,
+      toStatus: (r.to_status as ReviewEvent["toStatus"]) ?? null,
+      reviewer: String(r.reviewer),
+      note: String(r.note),
+      at: String(r.at),
+    }));
+  }
+
+  /** Automatic results + reviews of every signed-off call for a rubric (calibration input). */
+  lockedCalls(rubricId: string): Array<{ auto: ScoreResult; review: CallReview }> {
+    const rows = this.db
+      .prepare(`SELECT result_json, review_json FROM calls WHERE org_id = ? AND rubric_id = ? AND review_state = 'locked' AND result_json IS NOT NULL AND review_json IS NOT NULL`)
+      .all(this.orgId, rubricId) as Array<{ result_json: string; review_json: string }>;
+    return rows.map((r) => ({ auto: JSON.parse(r.result_json) as ScoreResult, review: JSON.parse(r.review_json) as CallReview }));
   }
 
   saveError(id: string, message: string): void {
@@ -116,20 +200,21 @@ export class Store {
   listCalls(limit = 200): CallRecord[] {
     const rows = this.db
       .prepare(
-        `SELECT id, title, agent_name, source, status, created_at, duration_sec, rubric_id, audio_path, score, compliance, error
+        `SELECT id, title, agent_name, source, status, created_at, duration_sec, rubric_id, audio_path, score, compliance, error, review_state, open_review
          FROM calls WHERE org_id = ? ORDER BY created_at DESC LIMIT ?`,
       )
       .all(this.orgId, limit) as unknown as CallRow[];
     return rows.map(toRecord);
   }
 
-  getCall(id: string): (CallDetail & { audioPath: string | null; audioMime: string | null }) | null {
+  getCall(id: string): StoredCall | null {
     const row = this.db.prepare(`SELECT * FROM calls WHERE id = ? AND org_id = ?`).get(id, this.orgId) as unknown as CallRow | undefined;
     if (!row) return null;
     return {
       ...toRecord(row),
       transcript: row.transcript_json ? (JSON.parse(row.transcript_json) as Transcript) : null,
-      result: row.result_json ? (JSON.parse(row.result_json) as ScoreResult) : null,
+      autoResult: row.result_json ? (JSON.parse(row.result_json) as ScoreResult) : null,
+      review: row.review_json ? (JSON.parse(row.review_json) as CallReview) : null,
       audioPath: row.audio_path,
       audioMime: row.audio_mime,
     };
@@ -176,5 +261,7 @@ function toRecord(r: CallRow): CallRecord {
     score: r.score,
     compliance: r.compliance,
     error: r.error,
+    reviewState: r.review_state ?? "auto",
+    openReviewItems: r.open_review ?? 0,
   };
 }

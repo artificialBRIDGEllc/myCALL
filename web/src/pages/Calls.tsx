@@ -9,6 +9,7 @@ export function CallsPage() {
   const [calls, setCalls] = useState<CallRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [view, setView] = useState<"all" | "review" | "locked">(() => (window.location.hash.includes("review") ? "review" : "all"));
 
   useEffect(() => {
     let stop = false;
@@ -27,14 +28,16 @@ export function CallsPage() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!calls || !q) return calls ?? [];
-    return calls.filter((c) => `${c.title} ${c.agentName ?? ""}`.toLowerCase().includes(q));
-  }, [calls, query]);
+    return (calls ?? [])
+      .filter((c) => (view === "review" ? c.status === "scored" && c.reviewState !== "locked" : view === "locked" ? c.reviewState === "locked" : true))
+      .filter((c) => !q || `${c.title} ${c.agentName ?? ""}`.toLowerCase().includes(q));
+  }, [calls, query, view]);
 
   const scored = (calls ?? []).filter((c) => c.status === "scored");
   const avg = scored.length ? Math.round(scored.reduce((s, c) => s + (c.score ?? 0), 0) / scored.length) : null;
   const fails = scored.filter((c) => c.compliance === "fail").length;
-  const review = scored.filter((c) => c.compliance === "review").length;
+  const review = scored.filter((c) => c.openReviewItems > 0).length;
+  const signedOff = scored.filter((c) => c.reviewState === "locked").length;
 
   if (error) return <ErrorBox message={error} />;
   if (!calls)
@@ -66,7 +69,7 @@ export function CallsPage() {
           <Stat label="Calls scored" value={scored.length} />
           <Stat label="Average quality" value={<span className={scoreTone(avg)}>{avg ?? "–"}</span>} />
           <Stat label="Compliance fails" value={<span className={fails ? "text-rose-600" : ""}>{fails}</span>} />
-          <Stat label="Need human review" value={<span className={review ? "text-amber-600" : ""}>{review}</span>} />
+          <Stat label="Waiting for a reviewer" value={<span className={review ? "text-violet-600" : ""}>{review}</span>} />
         </div>
       )}
 
@@ -77,7 +80,24 @@ export function CallsPage() {
       ) : (
         <div className="card overflow-hidden">
           <div className="border-b border-slate-200 p-3 dark:border-slate-800">
-            <input className="input max-w-xs" placeholder="Search by title or agent" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <div className="flex flex-wrap items-center gap-2">
+              <input className="input max-w-xs" placeholder="Search by title or agent" value={query} onChange={(e) => setQuery(e.target.value)} />
+              {(
+                [
+                  ["all", `All (${calls.length})`],
+                  ["review", `To review (${scored.filter((c) => c.reviewState !== "locked").length})`],
+                  ["locked", `Signed off (${signedOff})`],
+                ] as const
+              ).map(([v, label]) => (
+                <button
+                  key={v}
+                  className={cx("rounded-lg px-3 py-1.5 text-xs font-semibold", view === v ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300")}
+                  onClick={() => setView(v)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -89,6 +109,7 @@ export function CallsPage() {
                   <th className="hidden px-4 py-2 md:table-cell">Length</th>
                   <th className="px-4 py-2 text-right">Score</th>
                   <th className="px-4 py-2">Compliance</th>
+                  <th className="px-4 py-2">Review</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -110,6 +131,15 @@ export function CallsPage() {
                       {c.status === "processing" ? <Spinner className="text-slate-400" /> : c.status === "error" ? <span className="text-xs font-semibold text-rose-600">Error</span> : c.score}
                     </td>
                     <td className="px-4 py-3">{c.status === "scored" ? <ComplianceBadge status={c.compliance} /> : <span className="text-xs text-slate-500">{c.status === "processing" ? "Processing…" : ""}</span>}</td>
+                    <td className="px-4 py-3 text-xs whitespace-nowrap">
+                      {c.status !== "scored" ? null : c.reviewState === "locked" ? (
+                        <span className="font-semibold text-emerald-700 dark:text-emerald-300">✓ Signed off</span>
+                      ) : c.openReviewItems > 0 ? (
+                        <span className="font-semibold text-violet-700 dark:text-violet-300">{c.openReviewItems} to grade</span>
+                      ) : (
+                        <span className="text-slate-500">{c.reviewState === "in_review" ? "Ready to sign off" : "Not reviewed"}</span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

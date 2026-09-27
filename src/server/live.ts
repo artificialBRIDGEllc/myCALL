@@ -142,8 +142,9 @@ export function handleLiveSocket(socket: WebSocket, deps: { store: Store; pipeli
     store.saveTranscript(callId, transcript);
     send({ type: "scoring" });
     try {
-      const result = await scoreCall({ rubric: pipeline.rubric(rubricId)!, transcript, reviewer: config.reviewer });
-      store.saveResult(callId, result);
+      const rubric = pipeline.rubric(rubricId)!;
+      const auto = await scoreCall({ rubric, transcript, reviewer: config.reviewer });
+      const result = pipeline.saveScored(callId, rubric, auto);
       send({ type: "final", callId, result });
     } catch (err) {
       store.saveError(callId, (err as Error).message);
