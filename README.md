@@ -153,7 +153,10 @@ node scripts/e2e-smoke.mjs        # browser walkthrough (needs a running server)
 node scripts/capture-smoke.mjs    # real browser mic → worklet → WebSocket → WAV pipeline with a fake Deepgram
 node scripts/extension-smoke.mjs  # loads the extension in Chromium
 node scripts/review-smoke.mjs     # grade, override, sign off and calibrate in Chromium (after npm run build)
+npm run smoke:deepgram            # REAL Deepgram: speaks a sample call, scores it as stereo upload, mono upload and live stream
 ```
+
+**Real Deepgram check.** `smoke:deepgram` uses Deepgram's own text-to-speech to voice the sample Medicare call, with a different voice for the agent and the customer. It then pushes that audio through every speech path and fails if any path grades a phrase-rule item differently from the known-correct transcript, or seats the wrong person as the agent. It needs `DEEPGRAM_API_KEY` and costs about ten cents per run. On GitHub it runs automatically (workflow **Deepgram smoke test**) when speech code changes, using the `DEEPGRAM_API_KEY` repository secret. You can also start it by hand from the Actions tab.
 
 ## What's verified, and what isn't yet
 
@@ -163,7 +166,7 @@ node scripts/review-smoke.mjs     # grade, override, sign off and calibrate in C
 - The extension loads without errors.
 
 **Not yet verified**
-- **Deepgram:** calls to the real API are written to Deepgram's documented formats, but have not been run against a real key.
+- **Deepgram:** covered by `smoke:deepgram` (see Tests). Check the latest **Deepgram smoke test** run on GitHub for the current result.
 - **Claude reviewer:** calls to the real Claude API are written to the documented formats, but have not been run against a real key.
 - **Tab-audio sharing** through a real Chrome share prompt.
 

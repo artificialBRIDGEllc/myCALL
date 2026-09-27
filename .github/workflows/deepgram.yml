@@ -1,0 +1,37 @@
+# Scores a spoken sample call through the real Deepgram API (recording upload,
+# stereo and mono, plus a live stream). Uses the DEEPGRAM_API_KEY repository
+# secret and costs roughly ten cents per run, so it only runs when speech code
+# changes, or on demand from the Actions tab.
+name: Deepgram smoke test
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - src/stt/**
+      - src/server/live.ts
+      - src/server/pipeline.ts
+      - scripts/deepgram-smoke.mjs
+      - .github/workflows/deepgram.yml
+
+jobs:
+  deepgram:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:api
+      - name: Score a spoken call through real Deepgram
+        env:
+          DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}
+        run: node --disable-warning=ExperimentalWarning scripts/deepgram-smoke.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deepgram-smoke-report
+          path: deepgram-smoke-report.json
+          if-no-files-found: ignore
