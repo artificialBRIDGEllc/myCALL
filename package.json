@@ -2,7 +2,7 @@
   "name": "mycall",
   "version": "1.0.0",
   "private": true,
-  "description": "myCALL \u2014 score recorded and live browser calls with evidence-backed CMS compliance and sales-quality rubrics.",
+  "description": "myCALL — score recorded and live browser calls with evidence-backed CMS compliance and sales-quality rubrics.",
   "type": "module",
   "engines": {
     "node": ">=22.13"
@@ -19,7 +19,8 @@
     "test": "vitest run",
     "score": "tsx src/cli/score.ts",
     "build:extension": "vite build --config vite.extension.config.ts && cp web/public/pcm-worklet.js dist/extension/",
-    "e2e": "node scripts/e2e-smoke.mjs"
+    "e2e": "node scripts/e2e-smoke.mjs",
+    "smoke:deepgram": "node --disable-warning=ExperimentalWarning scripts/deepgram-smoke.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
