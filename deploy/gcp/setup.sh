@@ -85,6 +85,11 @@ if ! gcloud compute disks describe mycall-data --zone "$ZONE" --project "$PROJEC
 fi
 
 step "Starting the server"
+# Keep a custom domain from an earlier run unless a new one is given.
+if [ -z "$DOMAIN" ] && exists gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT"; then
+  DOMAIN=$(gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT" --format=json |
+    python3 -c 'import json,sys; m=json.load(sys.stdin).get("metadata",{}).get("items",[]); print(next((i["value"] for i in m if i["key"]=="mycall-domain"),""))')
+fi
 METADATA="mycall-image=$IMAGE"
 [ -n "$DOMAIN" ] && METADATA="$METADATA,mycall-domain=$DOMAIN"
 if exists gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT"; then

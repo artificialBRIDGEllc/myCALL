@@ -37,6 +37,7 @@ interface CallRow {
   review_json: string | null;
   review_state: ReviewState | null;
   open_review: number | null;
+  final_json?: string | null;
 }
 
 /** A call as stored: the automatic result and the human review are kept separately. */
@@ -44,16 +45,22 @@ export interface StoredCall extends CallRecord {
   transcript: Transcript | null;
   autoResult: ScoreResult | null;
   review: CallReview | null;
+  /** Totals as of the last save (automatic scoring or review), independent of the current rubric. */
+  finalTotals: FinalTotals | null;
   audioPath: string | null;
   audioMime: string | null;
 }
 
 /** The headline numbers shown in lists, taken from the final (reviewed) result. */
+/** The reviewed headline totals, saved so they survive later rubric edits or deletion. */
+export type FinalTotals = Pick<ScoreResult, "score" | "passed" | "compliance" | "criticalFailures" | "needsReview">;
+
 export interface FinalSummary {
   score: number;
   compliance: ComplianceStatus;
   openReviewItems: number;
   reviewState: ReviewState;
+  totals: FinalTotals;
 }
 
 export class Store {
@@ -117,6 +124,7 @@ export class Store {
     if (!cols.has("review_json")) this.db.exec(`ALTER TABLE calls ADD COLUMN review_json TEXT`);
     if (!cols.has("review_state")) this.db.exec(`ALTER TABLE calls ADD COLUMN review_state TEXT NOT NULL DEFAULT 'auto'`);
     if (!cols.has("open_review")) this.db.exec(`ALTER TABLE calls ADD COLUMN open_review INTEGER NOT NULL DEFAULT 0`);
+    if (!cols.has("final_json")) this.db.exec(`ALTER TABLE calls ADD COLUMN final_json TEXT`);
     // A server restart interrupts in-flight jobs; surface them instead of leaving them spinning.
     this.db
       .prepare(`UPDATE calls SET status = 'error', error = 'Interrupted by a server restart — click Rescore.' WHERE status = 'processing'`)
@@ -150,16 +158,16 @@ export class Store {
   saveResult(id: string, auto: ScoreResult, review: CallReview | null, final: FinalSummary): void {
     this.db
       .prepare(
-        `UPDATE calls SET status = 'scored', result_json = ?, review_json = ?, score = ?, compliance = ?, open_review = ?, review_state = ?,
+        `UPDATE calls SET status = 'scored', result_json = ?, review_json = ?, final_json = ?, score = ?, compliance = ?, open_review = ?, review_state = ?,
          rubric_id = ?, error = NULL WHERE id = ? AND org_id = ?`,
       )
-      .run(JSON.stringify(auto), review ? JSON.stringify(review) : null, final.score, final.compliance, final.openReviewItems, final.reviewState, auto.rubricId, id, this.orgId);
+      .run(JSON.stringify(auto), review ? JSON.stringify(review) : null, JSON.stringify(final.totals), final.score, final.compliance, final.openReviewItems, final.reviewState, auto.rubricId, id, this.orgId);
   }
 
   saveReview(id: string, review: CallReview, final: FinalSummary): void {
     this.db
-      .prepare(`UPDATE calls SET review_json = ?, score = ?, compliance = ?, open_review = ?, review_state = ? WHERE id = ? AND org_id = ?`)
-      .run(JSON.stringify(review), final.score, final.compliance, final.openReviewItems, final.reviewState, id, this.orgId);
+      .prepare(`UPDATE calls SET review_json = ?, final_json = ?, score = ?, compliance = ?, open_review = ?, review_state = ? WHERE id = ? AND org_id = ?`)
+      .run(JSON.stringify(review), JSON.stringify(final.totals), final.score, final.compliance, final.openReviewItems, final.reviewState, id, this.orgId);
   }
 
   addReviewEvent(e: Omit<ReviewEvent, "id">): void {
@@ -216,7 +224,7 @@ export class Store {
   listForExport(): StoredCall[] {
     const rows = this.db
       .prepare(
-        `SELECT id, title, agent_name, source, status, created_at, duration_sec, rubric_id, audio_path, audio_mime, score, compliance, error, review_state, open_review, result_json, review_json
+        `SELECT id, title, agent_name, source, status, created_at, duration_sec, rubric_id, audio_path, audio_mime, score, compliance, error, review_state, open_review, result_json, review_json, final_json
          FROM calls WHERE org_id = ? ORDER BY created_at DESC`,
       )
       .all(this.orgId) as unknown as CallRow[];
@@ -256,6 +264,7 @@ function toStored(row: CallRow): StoredCall {
     transcript: row.transcript_json ? (JSON.parse(row.transcript_json) as Transcript) : null,
     autoResult: row.result_json ? (JSON.parse(row.result_json) as ScoreResult) : null,
     review: row.review_json ? (JSON.parse(row.review_json) as CallReview) : null,
+    finalTotals: row.final_json ? (JSON.parse(row.final_json) as FinalTotals) : null,
     audioPath: row.audio_path,
     audioMime: row.audio_mime,
   };

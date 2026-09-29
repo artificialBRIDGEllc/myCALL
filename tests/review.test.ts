@@ -116,6 +116,28 @@ describe("review API", () => {
     expect(orphaned.result!.criteria.find((c) => c.criterionId === "no_pressure")).toMatchObject({ status: "partial", source: "human" });
   });
 
+  it("refuses to change a rubric without a new version, and keeps a reviewer's critical fail after the rubric is deleted", async () => {
+    const base_ = (await (await fetch(`${base}/api/rubrics/medicare-tpmo`)).json()) as Rubric;
+    const v1 = { ...base_, id: "strict-tpmo", name: "Strict TPMO", version: "1" };
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201);
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201); // re-saving identical content is fine
+    const changed = { ...v1, criteria: v1.criteria.map((c) => (c.id === "recording_notice" ? { ...c, points: 99 } : c)) };
+    expect((await send("POST", "/api/rubrics", changed)).status).toBe(409);
+
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await send("POST", "/api/calls", { transcript, rubricId: "strict-tpmo" })).json()) as { id: string };
+    for (let i = 0; i < 100 && (await call(id)).status === "processing"; i++) await new Promise((r) => setTimeout(r, 20));
+    // The TPMO disclaimer passed automatically; the reviewer fails it (a critical item).
+    const reviewed = (await (await send("PUT", `/api/calls/${id}/review/tpmo_disclaimer`, { status: "fail", note: "Read too fast to be understood.", reviewer: "Pat" })).json()) as CallDetail;
+    expect(reviewed.result).toMatchObject({ compliance: "fail", passed: false });
+    expect(reviewed.result!.criticalFailures).toContain("tpmo_disclaimer");
+
+    expect((await fetch(`${base}/api/rubrics/strict-tpmo`, { method: "DELETE" })).status).toBe(204);
+    const orphaned = await call(id);
+    expect(orphaned.result).toMatchObject({ compliance: "fail", passed: false, score: reviewed.result!.score });
+    expect(orphaned.result!.criticalFailures).toContain("tpmo_disclaimer");
+  });
+
   it("runs the full loop: grade open items, override, sign off, lock, reopen — all audited", async () => {
     const c = await newCall();
     expect(c.reviewState).toBe("auto");

@@ -129,6 +129,11 @@ export async function buildApp(config: AppConfig): Promise<App> {
   app.post("/api/rubrics", async (req, reply) => {
     try {
       const rubric = parseRubric(req.body);
+      // Stored grades point at a rubric id + version, so a changed definition needs a new version.
+      const existing = pipeline.rubric(rubric.id);
+      if (existing && existing.version === rubric.version && JSON.stringify(existing) !== JSON.stringify(rubric)) {
+        return reply.code(409).send({ error: `Rubric "${rubric.id}" version ${rubric.version} already exists with different content. Give the edited rubric a new version.` });
+      }
       store.saveRubric(rubric);
       return reply.code(201).send(rubric);
     } catch (err) {

@@ -267,12 +267,17 @@ export class Pipeline {
     if (rubric && rubric.version === auto.rubricVersion) return applyReview(rubric, auto, call.review);
     const criteria = applyOverrides(auto, call.review);
     if (criteria === auto.criteria) return auto;
+    // The complete reviewed totals were saved when the review was made; use them as a whole.
+    if (call.finalTotals) return { ...auto, criteria, ...call.finalTotals };
+    // Rows saved before totals were stored: best effort from the list columns.
     const status = new Map(criteria.map((c) => [c.criterionId, c.status]));
+    const compliance = call.compliance ?? auto.compliance;
     return {
       ...auto,
       criteria,
       score: call.score ?? auto.score,
-      compliance: call.compliance ?? auto.compliance,
+      compliance,
+      passed: compliance === "pass" && auto.passed,
       criticalFailures: auto.criticalFailures.filter((id) => status.get(id) === "fail" || status.get(id) === "partial"),
       needsReview: auto.needsReview.filter((id) => status.get(id) === "needs_review"),
     };
@@ -305,6 +310,7 @@ export class Pipeline {
 function summaryOf(final: ScoreResult, review: CallReview | null): FinalSummary {
   const touched = review && (review.locked || Object.keys(review.overrides).length > 0);
   return {
+    totals: { score: final.score, passed: final.passed, compliance: final.compliance, criticalFailures: final.criticalFailures, needsReview: final.needsReview },
     score: final.score,
     compliance: final.compliance,
     openReviewItems: final.needsReview.length,

@@ -16,7 +16,16 @@ TOKEN=$(md instance/service-accounts/default/token | python3 -c 'import json,sys
 # ---- Data disk (recordings + database live here, survive VM rebuilds) ----
 DEV=/dev/disk/by-id/google-mycall-data
 mkdir -p /mnt/mycall
-blkid "$DEV" >/dev/null 2>&1 || mkfs.ext4 -q -F "$DEV"
+# Format only a brand-new disk: no filesystem signature AND the first MiB is all zeros.
+# Anything else that doesn't mount is a recovery job, never an automatic wipe.
+if ! blkid -p "$DEV" >/dev/null 2>&1; then
+  if cmp -s -n 1048576 "$DEV" /dev/zero; then
+    mkfs.ext4 -q "$DEV"
+  else
+    echo "The mycall-data disk has data but no readable filesystem. Not formatting it; restore from a snapshot." >&2
+    exit 1
+  fi
+fi
 grep -q " /mnt/mycall " /etc/fstab || echo "$DEV /mnt/mycall ext4 defaults,nofail 0 2" >> /etc/fstab
 mountpoint -q /mnt/mycall || mount /mnt/mycall
 mkdir -p /mnt/mycall/data /mnt/mycall/caddy
