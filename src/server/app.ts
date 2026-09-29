@@ -130,8 +130,8 @@ export async function buildApp(config: AppConfig): Promise<App> {
     try {
       const rubric = parseRubric(req.body);
       // Stored grades point at a rubric id + version, so a changed definition needs a new version.
-      const existing = pipeline.rubric(rubric.id);
-      if (existing && existing.version === rubric.version && JSON.stringify(existing) !== JSON.stringify(rubric)) {
+      const existing = pipeline.rubricVersion(rubric.id, rubric.version);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(rubric)) {
         return reply.code(409).send({ error: `Rubric "${rubric.id}" version ${rubric.version} already exists with different content. Give the edited rubric a new version.` });
       }
       store.saveRubric(rubric);
@@ -159,7 +159,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
       .header("Content-Type", "text/csv; charset=utf-8")
       .header("Content-Disposition", `attachment; filename="mycall-results-${stamp}.csv"`)
       .header("Cache-Control", "no-store")
-      .send(callsCsv(rows, pipeline.rubrics()));
+      .send(callsCsv(rows, (id, version) => pipeline.rubricVersion(id, version)));
   });
 
   app.get<{ Params: { id: string } }>("/api/calls/:id", async (req, reply) => pipeline.detail(req.params.id) ?? reply.code(404).send({ error: "Call not found" }));

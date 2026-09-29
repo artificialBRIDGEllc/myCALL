@@ -138,6 +138,25 @@ describe("review API", () => {
     expect(orphaned.result!.criticalFailures).toContain("tpmo_disclaimer");
   });
 
+  it("reviews an older call with the exact rubric version it was graded with", async () => {
+    const base_ = (await (await fetch(`${base}/api/rubrics/medicare-tpmo`)).json()) as Rubric;
+    const v1 = { ...base_, id: "versioned-tpmo", name: "Versioned TPMO", version: "1" };
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201);
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await send("POST", "/api/calls", { transcript, rubricId: "versioned-tpmo" })).json()) as { id: string };
+    for (let i = 0; i < 100 && (await call(id)).status === "processing"; i++) await new Promise((r) => setTimeout(r, 20));
+
+    // v2 drops "no_pressure" and makes "rapport" critical.
+    const v2 = { ...v1, version: "2", criteria: v1.criteria.filter((c) => c.id !== "no_pressure").map((c) => (c.id === "rapport" ? { ...c, severity: "critical" as const } : c)) };
+    expect((await send("POST", "/api/rubrics", v2)).status).toBe(201);
+
+    // The v1 call can still be reviewed on an item v2 no longer has...
+    expect((await send("PUT", `/api/calls/${id}/review/no_pressure`, { status: "pass", note: "Fair warning, not a scare tactic.", reviewer: "Pat" })).status).toBe(200);
+    // ...and is judged by v1, where failing "rapport" is not a compliance failure.
+    const r = (await (await send("PUT", `/api/calls/${id}/review/rapport`, { status: "fail", note: "Cold throughout.", reviewer: "Pat" })).json()) as CallDetail;
+    expect(r.result!.criticalFailures).not.toContain("rapport");
+  });
+
   it("runs the full loop: grade open items, override, sign off, lock, reopen — all audited", async () => {
     const c = await newCall();
     expect(c.reviewState).toBe("auto");
@@ -220,6 +239,35 @@ describe("review API", () => {
 });
 
 describe("migration", () => {
+  it("fills in saved totals for calls scored before totals were stored", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-backfill-"));
+    process.env.LOG_LEVEL = "silent";
+    const opts = { port: 0, host: "127.0.0.1", dataDir: dir, apiToken: null, deepgram: null, reviewer: null, maxUploadMb: 5, webDir: null, demoSpeed: 100 };
+    let ctx = await buildApp(opts);
+    await ctx.app.listen({ port: 0, host: "127.0.0.1" });
+    let url = `http://127.0.0.1:${(ctx.app.server.address() as { port: number }).port}`;
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await fetch(`${url}/api/calls`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcript, rubricId: "medicare-tpmo" }) })).json()) as { id: string };
+    for (let i = 0; i < 100; i++) {
+      const c = (await (await fetch(`${url}/api/calls/${id}`)).json()) as CallDetail;
+      if (c.status !== "processing") break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await ctx.app.close();
+
+    const db = new DatabaseSync(path.join(dir, "mycall.db"));
+    db.exec("UPDATE calls SET final_json = NULL");
+    db.close();
+
+    ctx = await buildApp(opts); // startup backfills while the rubric version is known
+    await ctx.app.close();
+    const check = new DatabaseSync(path.join(dir, "mycall.db"));
+    const row = check.prepare("SELECT final_json FROM calls WHERE id = ?").get(id) as { final_json: string | null };
+    check.close();
+    expect(JSON.parse(row.final_json!)).toMatchObject({ compliance: expect.any(String), score: expect.any(Number) });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("upgrades a database created before human review existed", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-mig-"));
     const db = new DatabaseSync(path.join(dir, "mycall.db"));

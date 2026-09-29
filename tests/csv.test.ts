@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { CriterionResult, Rubric } from "../src/core/types.js";
-import { callsCsv, csvCell, type ExportCall } from "../src/server/csv.js";
+import { callsCsv as toCsv, csvCell, type ExportCall } from "../src/server/csv.js";
+
+const callsCsv = (calls: ExportCall[], rubrics: Rubric[]) => toCsv(calls, (id, version) => rubrics.find((r) => r.id === id && r.version === version));
 
 const rubric = (id: string, name: string, criteria: Array<[string, string]>, version = "1", components?: Array<[string, string]>) =>
   ({ id, name, version, criteria: criteria.map(([cid, cname]) => ({ id: cid, name: cname, components: components?.map(([pid, label]) => ({ id: pid, label })) })) }) as unknown as Rubric;
@@ -48,7 +50,7 @@ describe("results spreadsheet", () => {
   it("keeps grades from an older rubric version out of the current version's column", () => {
     const rubrics = [rubric("a", "Sales", [["greeting", "Uses the new greeting script"]], "2")];
     const [head, oldRow, newRow] = parse(callsCsv([call("old", "a", [crit("greeting", "fail")], 60, "1"), call("new", "a", [crit("greeting", "pass")], 60, "2")], rubrics));
-    expect(head).toContain("Sales v1: greeting,Sales v2: Uses the new greeting script");
+    expect(head).toContain("a v1: greeting,Sales v2: Uses the new greeting script"); // v1 not on file: labelled by id
     expect(oldRow!.endsWith(",Fail,")).toBe(true);
     expect(newRow!.endsWith(",,Pass")).toBe(true);
   });
@@ -60,6 +62,14 @@ describe("results spreadsheet", () => {
     const [, row] = parse(callsCsv([call("t", "a", [partial])], rubrics));
     expect(row).toContain("TPMO disclaimer: missing How many plans / Medicare.gov / SHIP");
     expect(row).not.toContain("we do not offer every plan");
+  });
+
+  it("never repeats a header, even when item names collide with each other or with fixed columns", () => {
+    const rubrics = [rubric("a", "S", [["greet1", "Greeting"], ["greet2", "Greeting"], ["score", "Score"]])];
+    const [head] = parse(callsCsv([call("t", "a", [crit("greet1", "pass"), crit("greet2", "fail"), crit("score", "pass")])], rubrics));
+    const cols = head!.split(",");
+    expect(new Set(cols).size).toBe(cols.length);
+    expect(head).toContain("Greeting [greet1],Greeting [greet2],Score [score]");
   });
 
   it("neutralises cells a spreadsheet would run as formulas", () => {

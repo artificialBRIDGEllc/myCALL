@@ -7,7 +7,7 @@ import { applyRoleMap, swapRoles } from "../stt/roles.js";
 import { transcribeRecording, wavChannels } from "../stt/deepgram.js";
 import type { AppConfig } from "./config.js";
 import type { ExportCall } from "./csv.js";
-import type { FinalSummary, StoredCall, Store } from "./db.js";
+import type { FinalSummary, FinalTotals, StoredCall, Store } from "./db.js";
 
 /** A review request that can't be applied; `status` is the HTTP status to return. */
 export class ReviewError extends Error {
@@ -36,7 +36,15 @@ export class Pipeline {
     private store: Store,
     private config: AppConfig,
     private concurrency = 3,
-  ) {}
+  ) {
+    // Keep every built-in rubric version this server has shipped, and save final totals for
+    // calls scored before totals were stored, while their rubric version is still known.
+    for (const r of builtInRubrics) store.archiveRubric(r);
+    for (const c of store.callsMissingTotals()) {
+      const rubric = this.rubricFor(c.autoResult);
+      if (rubric) store.setFinalTotals(c.id, totalsOf(applyReview(rubric, c.autoResult, c.review)));
+    }
+  }
 
   rubrics(): Rubric[] {
     const custom = this.store.listRubrics();
@@ -46,6 +54,17 @@ export class Pipeline {
 
   rubric(id: string): Rubric | undefined {
     return this.rubrics().find((r) => r.id === id);
+  }
+
+  /** The exact rubric version a result was graded with (current, or a kept older version). */
+  rubricVersion(id: string, version: string): Rubric | undefined {
+    const current = this.rubric(id);
+    if (current?.version === version) return current;
+    return this.store.rubricVersion(id, version) ?? undefined;
+  }
+
+  private rubricFor(auto: ScoreResult): Rubric | undefined {
+    return this.rubricVersion(auto.rubricId, auto.rubricVersion);
   }
 
   /** Recorded audio: transcribe, then score. */
@@ -205,8 +224,8 @@ export class Pipeline {
     if (!call) throw new ReviewError(404, "Call not found.");
     if (!call.review?.locked) throw new ReviewError(409, "This call isn't signed off.");
     if (!reviewer.trim() || !note.trim()) throw new ReviewError(400, "Add your name and the reason for reopening.");
-    const rubric = this.rubric(call.review.rubricId);
-    if (!rubric || !call.autoResult) throw new ReviewError(409, "This call's rubric no longer exists.");
+    const rubric = call.autoResult ? this.rubricFor(call.autoResult) : undefined;
+    if (!rubric || !call.autoResult) throw new ReviewError(409, "The rubric version this call was graded with is no longer available.");
     const review: CallReview = { ...call.review, locked: false, lockedBy: null, lockedAt: null };
     this.log(callId, "unlock", null, null, null, reviewer.trim(), note.trim());
     return this.commitReview(call, rubric, call.autoResult, review);
@@ -225,8 +244,8 @@ export class Pipeline {
     const call = this.store.getCall(callId);
     if (!call) throw new ReviewError(404, "Call not found.");
     if (call.status !== "scored" || !call.autoResult) throw new ReviewError(409, "This call hasn't finished scoring yet.");
-    const rubric = this.rubric(call.autoResult.rubricId);
-    if (!rubric) throw new ReviewError(409, "This call's rubric no longer exists.");
+    const rubric = this.rubricFor(call.autoResult);
+    if (!rubric) throw new ReviewError(409, "The rubric version this call was graded with is no longer available.");
     const review = call.review && call.review.rubricId === rubric.id ? structuredClone(call.review) : emptyReview(rubric.id);
     if (review.locked) throw new ReviewError(409, `Signed off by ${review.lockedBy}. Reopen it to make changes.`);
     return { call, rubric, auto: call.autoResult, review };
@@ -263,8 +282,8 @@ export class Pipeline {
   private finalResult(call: StoredCall): ScoreResult | null {
     const auto = call.autoResult;
     if (!auto) return null;
-    const rubric = this.rubric(auto.rubricId);
-    if (rubric && rubric.version === auto.rubricVersion) return applyReview(rubric, auto, call.review);
+    const rubric = this.rubricFor(auto);
+    if (rubric) return applyReview(rubric, auto, call.review);
     const criteria = applyOverrides(auto, call.review);
     if (criteria === auto.criteria) return auto;
     // The complete reviewed totals were saved when the review was made; use them as a whole.
@@ -307,10 +326,14 @@ export class Pipeline {
   }
 }
 
+function totalsOf(final: ScoreResult): FinalTotals {
+  return { score: final.score, passed: final.passed, compliance: final.compliance, criticalFailures: final.criticalFailures, needsReview: final.needsReview };
+}
+
 function summaryOf(final: ScoreResult, review: CallReview | null): FinalSummary {
   const touched = review && (review.locked || Object.keys(review.overrides).length > 0);
   return {
-    totals: { score: final.score, passed: final.passed, compliance: final.compliance, criticalFailures: final.criticalFailures, needsReview: final.needsReview },
+    totals: totalsOf(final),
     score: final.score,
     compliance: final.compliance,
     openReviewItems: final.needsReview.length,

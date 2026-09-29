@@ -22,35 +22,40 @@ export function csvCell(value: unknown): string {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-export function callsCsv(calls: ExportCall[], rubrics: Rubric[]): string {
+/** Looks up the exact rubric version a result was graded with (current or kept history). */
+export type RubricLookup = (id: string, version: string) => Rubric | undefined;
+
+const FIXED = ["Call", "Agent", "Date", "Length", "Source", "Status", "Score", "Compliance", "Critical failures", "Review", "Items to grade", "Problems found"];
+
+export function callsCsv(calls: ExportCall[], rubricFor: RubricLookup): string {
   // A column is one criterion of one rubric *version*: criterion ids are only unique within a
   // rubric, and an edited rubric may change what an id means. Criteria come from each stored
   // result, so items from edited or deleted rubrics still get a column.
   const groupOf = (r: ScoreResult) => `${r.rubricId}@${r.rubricVersion}`;
-  /** The current rubric definition, only if it is the version this result was graded against. */
-  const defOf = (r: ScoreResult | null | undefined) => {
-    const rubric = r ? rubrics.find((x) => x.id === r.rubricId) : undefined;
-    return rubric && rubric.version === r!.rubricVersion ? rubric : undefined;
-  };
+  const defOf = (r: ScoreResult | null | undefined) => (r ? rubricFor(r.rubricId, r.rubricVersion) : undefined);
   const scored = calls.map((c) => c.result).filter((r): r is ScoreResult => Boolean(r));
   const groups = [...new Map(scored.map((r) => [groupOf(r), r])).values()];
   const multi = groups.length > 1;
-  const columns: Array<{ key: string; name: string }> = [];
+  const columns: Array<{ key: string; id: string; name: string }> = [];
   const seen = new Set<string>();
   for (const first of groups) {
     const def = defOf(first);
     const ids = [...(def?.criteria.map((c) => c.id) ?? [])];
     for (const r of scored) if (groupOf(r) === groupOf(first)) for (const c of r.criteria) if (!ids.includes(c.criterionId)) ids.push(c.criterionId);
-    const label = `${rubrics.find((x) => x.id === first.rubricId)?.name ?? first.rubricId} v${first.rubricVersion}`;
+    const label = `${def?.name ?? first.rubricId} v${first.rubricVersion}`;
     for (const id of ids) {
       const key = `${groupOf(first)}:${id}`;
       if (seen.has(key)) continue;
       seen.add(key);
       const name = def?.criteria.find((c) => c.id === id)?.name ?? id;
-      columns.push({ key, name: multi ? `${label}: ${name}` : name });
+      columns.push({ key, id, name: multi ? `${label}: ${name}` : name });
     }
   }
-  const header = ["Call", "Agent", "Date", "Length", "Source", "Status", "Score", "Compliance", "Critical failures", "Review", "Items to grade", "Problems found", ...columns.map((c) => c.name)];
+  // Every header must be unique, or spreadsheet tools that map by header mix columns up.
+  const count = new Map<string, number>();
+  for (const n of [...FIXED, ...columns.map((c) => c.name)]) count.set(n, (count.get(n) ?? 0) + 1);
+  for (const c of columns) if (count.get(c.name)! > 1) c.name = `${c.name} [${c.id}]`;
+  const header = [...FIXED, ...columns.map((c) => c.name)];
   const rows = calls.map((call) => {
     const r = call.result;
     const def = defOf(r);

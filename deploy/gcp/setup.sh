@@ -14,12 +14,17 @@ if [ -z "$PROJECT" ]; then
   echo "Choose your Google Cloud project first:  gcloud config set project YOUR-PROJECT-ID"
   exit 1
 fi
+NAME=mycall
+# On updates, find the existing server wherever it was first created (unless told otherwise).
+if [ -z "${ZONE:-}" ] && [ -z "${REGION:-}" ]; then
+  ZONE=$(gcloud compute instances list --project "$PROJECT" --filter="name=$NAME" --format='value(zone.basename())' 2>/dev/null | head -n1 || true)
+fi
+if [ -n "${ZONE:-}" ] && [ -z "${REGION:-}" ]; then REGION=${ZONE%-*}; fi
 REGION=${REGION:-us-central1}
 ZONE=${ZONE:-${REGION}-a}
 MACHINE_GIVEN=${MACHINE:-}
 MACHINE=${MACHINE:-e2-small}
 DOMAIN=${DOMAIN:-}
-NAME=mycall
 SA=mycall-vm@$PROJECT.iam.gserviceaccount.com
 IMAGE=$REGION-docker.pkg.dev/$PROJECT/mycall/app:latest
 exists() { "$@" >/dev/null 2>&1; }

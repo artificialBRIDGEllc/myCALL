@@ -100,6 +100,15 @@ export class Store {
         updated_at TEXT NOT NULL,
         PRIMARY KEY (org_id, id)
       );
+      -- Every rubric definition ever used, so old calls are always handled with the exact version they were graded against.
+      CREATE TABLE IF NOT EXISTS rubric_versions (
+        id TEXT NOT NULL,
+        org_id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        json TEXT NOT NULL,
+        saved_at TEXT NOT NULL,
+        PRIMARY KEY (org_id, id, version)
+      );
       CREATE TABLE IF NOT EXISTS review_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         org_id TEXT NOT NULL,
@@ -247,6 +256,31 @@ export class Store {
     this.db
       .prepare(`INSERT INTO rubrics (id, org_id, json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(org_id, id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`)
       .run(r.id, this.orgId, JSON.stringify(r), new Date().toISOString());
+    this.archiveRubric(r);
+  }
+
+  /** Keep a copy of this exact rubric version (no-op if already kept). */
+  archiveRubric(r: Rubric): void {
+    this.db
+      .prepare(`INSERT OR IGNORE INTO rubric_versions (id, org_id, version, json, saved_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(r.id, this.orgId, r.version, JSON.stringify(r), new Date().toISOString());
+  }
+
+  rubricVersion(id: string, version: string): Rubric | null {
+    const row = this.db.prepare(`SELECT json FROM rubric_versions WHERE org_id = ? AND id = ? AND version = ?`).get(this.orgId, id, version) as { json: string } | undefined;
+    return row ? (JSON.parse(row.json) as Rubric) : null;
+  }
+
+  /** Scored calls saved before final totals were stored (for a one-time backfill). */
+  callsMissingTotals(): Array<{ id: string; autoResult: ScoreResult; review: CallReview | null }> {
+    const rows = this.db
+      .prepare(`SELECT id, result_json, review_json FROM calls WHERE org_id = ? AND result_json IS NOT NULL AND final_json IS NULL`)
+      .all(this.orgId) as Array<{ id: string; result_json: string; review_json: string | null }>;
+    return rows.map((r) => ({ id: r.id, autoResult: JSON.parse(r.result_json) as ScoreResult, review: r.review_json ? (JSON.parse(r.review_json) as CallReview) : null }));
+  }
+
+  setFinalTotals(id: string, totals: FinalTotals): void {
+    this.db.prepare(`UPDATE calls SET final_json = ? WHERE id = ? AND org_id = ?`).run(JSON.stringify(totals), id, this.orgId);
   }
 
   deleteRubric(id: string): boolean {
