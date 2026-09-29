@@ -108,6 +108,12 @@ describe("review API", () => {
     expect(after.result!.compliance).toBe(reviewed.result!.compliance);
     expect(after.result!.criticalFailures).not.toContain("no_pressure");
     expect(after.result!.criteria.find((c) => c.criterionId === "no_pressure")).toMatchObject({ status: "partial", source: "human" });
+
+    // Deleting the rubric must not throw away the human decisions either.
+    expect((await fetch(`${base}/api/rubrics/custom-tpmo`, { method: "DELETE" })).status).toBe(204);
+    const orphaned = await call(id);
+    expect(orphaned.result!.score).toBe(reviewed.result!.score);
+    expect(orphaned.result!.criteria.find((c) => c.criterionId === "no_pressure")).toMatchObject({ status: "partial", source: "human" });
   });
 
   it("runs the full loop: grade open items, override, sign off, lock, reopen — all audited", async () => {

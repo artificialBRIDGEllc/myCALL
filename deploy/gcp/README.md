@@ -48,7 +48,7 @@ In Cloud Shell: `cd myCALL && git pull && bash deploy/gcp/setup.sh`. It rebuilds
 
 | Piece | Why |
 |---|---|
-| `e2-small` VM (Debian 12, Shielded VM), fixed IP | Runs the app. Change the size with `MACHINE=e2-medium` for heavy batches. |
+| `e2-small` VM (Debian 12, Shielded VM), fixed IP | Runs the app. For heavy batches, rerun with `MACHINE=e2-medium bash deploy/gcp/setup.sh`; it resizes the existing server (about a minute offline). |
 | `mycall-data` 50 GB disk, kept if the VM is deleted | Database and recordings. Encrypted at rest by Google. |
 | Nightly snapshot, 14 days kept | Backups. |
 | Secret Manager: `mycall-deepgram-key`, `mycall-api-token` | Keys never live in files or the repo. |

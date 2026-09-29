@@ -16,6 +16,7 @@ if [ -z "$PROJECT" ]; then
 fi
 REGION=${REGION:-us-central1}
 ZONE=${ZONE:-${REGION}-a}
+MACHINE_GIVEN=${MACHINE:-}
 MACHINE=${MACHINE:-e2-small}
 DOMAIN=${DOMAIN:-}
 NAME=mycall
@@ -87,6 +88,13 @@ step "Starting the server"
 METADATA="mycall-image=$IMAGE"
 [ -n "$DOMAIN" ] && METADATA="$METADATA,mycall-domain=$DOMAIN"
 if exists gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT"; then
+  CURRENT=$(gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT" --format='value(machineType.basename())')
+  if [ -n "$MACHINE_GIVEN" ] && [ "$CURRENT" != "$MACHINE_GIVEN" ]; then
+    echo "Resizing the server from $CURRENT to $MACHINE_GIVEN (about 1 minute offline)"
+    gcloud compute instances stop "$NAME" --zone "$ZONE" --project "$PROJECT"
+    gcloud compute instances set-machine-type "$NAME" --machine-type "$MACHINE_GIVEN" --zone "$ZONE" --project "$PROJECT"
+    gcloud compute instances start "$NAME" --zone "$ZONE" --project "$PROJECT"
+  fi
   gcloud compute instances add-metadata "$NAME" --zone "$ZONE" --project "$PROJECT" \
     --metadata "$METADATA" --metadata-from-file startup-script=deploy/gcp/vm-startup.sh
   gcloud compute ssh "$NAME" --zone "$ZONE" --project "$PROJECT" --quiet --command "sudo google_metadata_script_runner startup"
