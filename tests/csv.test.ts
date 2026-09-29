@@ -84,7 +84,8 @@ describe("results spreadsheet", () => {
     const said = { utteranceId: 9, start: 95, end: 99, role: "agent", quote: "we do not offer every plan" };
     const late = crit("tpmo", "fail", { evidence: [said] as never, componentsFound: [], late: true, rationale: "Said too late — only found after the 60s limit." });
     const [, row] = parse(callsCsv([call("t", "a", [late])], rubrics));
-    expect(row).toContain("TPMO disclaimer: said too late (1:35)");
+    expect(row).toContain("TPMO disclaimer: said too late");
+    expect(row).not.toContain("(1:35)"); // evidence may be an on-time part, so no timestamp
     expect(row).not.toContain("missing");
   });
 
