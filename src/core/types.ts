@@ -135,6 +135,8 @@ export interface CriterionResult {
   rationale: string;
   source: "rules" | "llm" | "rules+llm" | "human";
   coaching?: string;
+  /** Required criteria with a time limit: everything needed was said, but only after the limit. */
+  late?: boolean;
   /** Required criteria with components: which were found. */
   componentsFound?: string[];
   /** Set when a human reviewer overrode or confirmed the automatic grade. */

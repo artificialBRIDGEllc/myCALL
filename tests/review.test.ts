@@ -158,6 +158,31 @@ describe("review API", () => {
     expect(r.result!.criticalFailures).not.toContain("rapport");
   });
 
+  it("clears review decisions when a call is rescored with a newer version of its rubric", async () => {
+    const base_ = (await (await fetch(`${base}/api/rubrics/medicare-tpmo`)).json()) as Rubric;
+    const v1 = { ...base_, id: "rescore-tpmo", name: "Rescore TPMO", version: "1" };
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201);
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await send("POST", "/api/calls", { transcript, rubricId: "rescore-tpmo" })).json()) as { id: string };
+    for (let i = 0; i < 100 && (await call(id)).status === "processing"; i++) await new Promise((r) => setTimeout(r, 20));
+    await send("PUT", `/api/calls/${id}/review/no_pressure`, { status: "pass", note: "Fair warning.", reviewer: "Pat" });
+
+    // Same version: the decision survives a rescore.
+    await send("POST", `/api/calls/${id}/rescore`, {});
+    let after = await call(id);
+    for (let i = 0; i < 100 && after.status === "processing"; i++) after = (await new Promise((r) => setTimeout(r, 20)), await call(id));
+    expect(after.review?.overrides.no_pressure?.status).toBe("pass");
+
+    // New version: it is cleared and the clearing is logged.
+    expect((await send("POST", "/api/rubrics", { ...v1, version: "2", criteria: v1.criteria.map((c) => (c.id === "no_pressure" ? { ...c, severity: "critical" as const } : c)) })).status).toBe(201);
+    await send("POST", `/api/calls/${id}/rescore`, {});
+    after = await call(id);
+    for (let i = 0; i < 100 && after.status === "processing"; i++) after = (await new Promise((r) => setTimeout(r, 20)), await call(id));
+    expect(after.review).toBeNull();
+    expect(after.reviewLog.at(-1)).toMatchObject({ reviewer: "system", action: "revert" });
+    expect(after.reviewLog.at(-1)!.note).toContain("v2");
+  });
+
   it("runs the full loop: grade open items, override, sign off, lock, reopen — all audited", async () => {
     const c = await newCall();
     expect(c.reviewState).toBe("auto");

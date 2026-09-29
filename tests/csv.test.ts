@@ -79,6 +79,15 @@ describe("results spreadsheet", () => {
     expect(new Set(cols).size).toBe(cols.length);
   });
 
+  it("says a disclosure was too late instead of listing every part as missing", () => {
+    const rubrics = [rubric("a", "S", [["tpmo", "TPMO disclaimer"]], "1", [["not_every", "Not every plan"], ["count", "How many plans"]])];
+    const said = { utteranceId: 9, start: 95, end: 99, role: "agent", quote: "we do not offer every plan" };
+    const late = crit("tpmo", "fail", { evidence: [said] as never, componentsFound: [], late: true, rationale: "Said too late — only found after the 60s limit." });
+    const [, row] = parse(callsCsv([call("t", "a", [late])], rubrics));
+    expect(row).toContain("TPMO disclaimer: said too late (1:35)");
+    expect(row).not.toContain("missing");
+  });
+
   it("neutralises cells a spreadsheet would run as formulas", () => {
     expect(csvCell("=1+1")).toBe("'=1+1");
     expect(csvCell("-5")).toBe("'-5");

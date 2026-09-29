@@ -135,8 +135,11 @@ export class Pipeline {
    * different rubric. Returns the final (reviewed) result.
    */
   saveScored(callId: string, rubric: Rubric, auto: ScoreResult): ScoreResult {
-    let review = this.store.getCall(callId)?.review ?? null;
-    if (review && review.rubricId !== rubric.id) {
+    const previous = this.store.getCall(callId);
+    let review = previous?.review ?? null;
+    // Decisions only carry over to the same rubric *version*: a new version may change what an item means.
+    const sameVersion = review?.rubricId === rubric.id && (!previous?.autoResult || previous.autoResult.rubricVersion === auto.rubricVersion);
+    if (review && !sameVersion) {
       const dropped = Object.keys(review.overrides).length;
       if (dropped) {
         this.store.addReviewEvent({
@@ -146,7 +149,7 @@ export class Pipeline {
           fromStatus: null,
           toStatus: null,
           reviewer: "system",
-          note: `Rescored with rubric "${rubric.id}"; ${dropped} review decision(s) made against "${review.rubricId}" were cleared.`,
+          note: `Rescored with rubric "${rubric.id}" v${auto.rubricVersion}; ${dropped} review decision(s) made against "${review.rubricId}"${previous?.autoResult ? ` v${previous.autoResult.rubricVersion}` : ""} were cleared.`,
           at: new Date().toISOString(),
         });
       }

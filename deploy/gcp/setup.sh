@@ -92,10 +92,15 @@ if ! gcloud compute disks describe mycall-data --zone "$ZONE" --project "$PROJEC
 fi
 
 step "Starting the server"
-# Keep a custom domain from an earlier run unless a new one is given.
-if [ -z "$DOMAIN" ] && exists gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT"; then
-  DOMAIN=$(gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT" --format=json |
-    python3 -c 'import json,sys; m=json.load(sys.stdin).get("metadata",{}).get("items",[]); print(next((i["value"] for i in m if i["key"]=="mycall-domain"),""))')
+# A custom domain is remembered at project level, so it survives the VM being deleted and recreated.
+meta_domain() { python3 -c 'import json,sys; d=json.load(sys.stdin); m=(d.get("commonInstanceMetadata") or d.get("metadata") or {}).get("items",[]); print(next((i["value"] for i in m if i["key"]=="mycall-domain"),""))'; }
+if [ -n "$DOMAIN" ]; then
+  gcloud compute project-info add-metadata --metadata "mycall-domain=$DOMAIN" --project "$PROJECT" >/dev/null
+else
+  DOMAIN=$(gcloud compute project-info describe --project "$PROJECT" --format=json | meta_domain)
+  if [ -z "$DOMAIN" ] && exists gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT"; then
+    DOMAIN=$(gcloud compute instances describe "$NAME" --zone "$ZONE" --project "$PROJECT" --format=json | meta_domain)
+  fi
 fi
 METADATA="mycall-image=$IMAGE"
 [ -n "$DOMAIN" ] && METADATA="$METADATA,mycall-domain=$DOMAIN"

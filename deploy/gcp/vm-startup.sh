@@ -7,7 +7,7 @@ set -euo pipefail
 MD=http://metadata.google.internal/computeMetadata/v1
 md() { curl -fsS -H "Metadata-Flavor: Google" "$MD/$1"; }
 IMAGE=$(md instance/attributes/mycall-image)
-DOMAIN=$(md instance/attributes/mycall-domain 2>/dev/null || true)
+DOMAIN=$(md instance/attributes/mycall-domain 2>/dev/null || md project/attributes/mycall-domain 2>/dev/null || true)
 PROJECT=$(md project/project-id)
 IP=$(md instance/network-interfaces/0/access-configs/0/external-ip)
 DOMAIN=${DOMAIN:-${IP//./-}.sslip.io}

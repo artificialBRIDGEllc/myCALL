@@ -72,6 +72,11 @@ export function callsCsv(calls: ExportCall[], rubricFor: RubricLookup): string {
     const describe = (c: CriterionResult) => {
       // A reviewer's decision keeps the automatic evidence, which may have supported the opposite grade.
       if (c.review) return `${nameOf(c.criterionId)}: reviewer ${c.review.reviewer}: "${c.review.note}"`;
+      // Said, but after the time limit: that is the reason, not missing parts.
+      if (c.late) {
+        const ev = c.evidence[0];
+        return `${nameOf(c.criterionId)}: said too late${ev ? ` (${clock(ev.start)})` : ""}`;
+      }
       // A multi-part requirement's evidence shows the parts that WERE said; name the missing ones.
       const parts = def?.criteria.find((x) => x.id === c.criterionId)?.components;
       if (parts?.length && c.componentsFound) {

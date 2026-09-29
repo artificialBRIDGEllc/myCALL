@@ -241,7 +241,7 @@ function judgeRequired(
   aiAvailable: boolean,
   byUtt: Map<number, Utterance>,
 ): CriterionResult {
-  const extra = { componentsFound: f.componentsFound };
+  const extra = { componentsFound: f.componentsFound, ...(f.late ? { late: true } : {}) };
   const window = c.withinSeconds !== undefined ? ` within ${c.withinSeconds}s` : "";
   if (f.satisfied) {
     const at = f.evidence[0] ? ` at ${formatClock(f.evidence[0].start)}` : "";
