@@ -10,6 +10,7 @@ import { medicareRubric } from "../src/rubrics/index.js";
 import { sampleTranscript } from "../src/rubrics/sample-call.js";
 import { buildApp, type App } from "../src/server/app.js";
 import { Store } from "../src/server/db.js";
+import { Pipeline } from "../src/server/pipeline.js";
 
 describe("applyReview", () => {
   it("overrides grades, re-totals the score and compliance, and keeps the automatic grade visible", async () => {
@@ -239,6 +240,21 @@ describe("review API", () => {
 });
 
 describe("migration", () => {
+  it("keeps custom rubrics saved before version history existed", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-rv-"));
+    const store = new Store(dir);
+    const custom = { ...medicareRubric, id: "legacy-custom", version: "7" };
+    store.saveRubric(custom);
+    const db = new DatabaseSync(path.join(dir, "mycall.db"));
+    db.exec("DELETE FROM rubric_versions"); // as if saved by the old code
+    db.close();
+    expect(store.rubricVersion("legacy-custom", "7")).toBeNull();
+    new Pipeline(store, { reviewer: null, deepgram: null } as never);
+    expect(store.rubricVersion("legacy-custom", "7")).toMatchObject({ id: "legacy-custom", version: "7" });
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("fills in saved totals for calls scored before totals were stored", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-backfill-"));
     process.env.LOG_LEVEL = "silent";

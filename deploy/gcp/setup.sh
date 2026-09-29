@@ -18,6 +18,8 @@ NAME=mycall
 # On updates, find the existing server wherever it was first created (unless told otherwise).
 if [ -z "${ZONE:-}" ] && [ -z "${REGION:-}" ]; then
   ZONE=$(gcloud compute instances list --project "$PROJECT" --filter="name=$NAME" --format='value(zone.basename())' 2>/dev/null | head -n1 || true)
+  # The VM may have been deleted; the recordings disk is kept and pins the location.
+  [ -n "$ZONE" ] || ZONE=$(gcloud compute disks list --project "$PROJECT" --filter="name=mycall-data" --format='value(zone.basename())' 2>/dev/null | head -n1 || true)
 fi
 if [ -n "${ZONE:-}" ] && [ -z "${REGION:-}" ]; then REGION=${ZONE%-*}; fi
 REGION=${REGION:-us-central1}

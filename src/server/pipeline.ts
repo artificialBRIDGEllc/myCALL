@@ -37,9 +37,10 @@ export class Pipeline {
     private config: AppConfig,
     private concurrency = 3,
   ) {
-    // Keep every built-in rubric version this server has shipped, and save final totals for
+    // Keep every rubric version in use (built-in and custom, including ones saved before version
+    // history existed), and save final totals for
     // calls scored before totals were stored, while their rubric version is still known.
-    for (const r of builtInRubrics) store.archiveRubric(r);
+    for (const r of [...builtInRubrics, ...store.listRubrics()]) store.archiveRubric(r);
     for (const c of store.callsMissingTotals()) {
       const rubric = this.rubricFor(c.autoResult);
       if (rubric) store.setFinalTotals(c.id, totalsOf(applyReview(rubric, c.autoResult, c.review)));

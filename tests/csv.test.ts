@@ -72,6 +72,13 @@ describe("results spreadsheet", () => {
     expect(head).toContain("Greeting [greet1],Greeting [greet2],Score [score]");
   });
 
+  it("keeps headers unique across rubrics with the same name, version and item", () => {
+    const rubrics = [rubric("a", "Sales", [["greet", "Greeting"]]), rubric("b", "Sales", [["greet", "Greeting"], ["x", "Sales v1: Greeting [a@1:greet]"]])];
+    const [head] = parse(callsCsv([call("one", "a", [crit("greet", "pass")]), call("two", "b", [crit("greet", "fail"), crit("x", "pass")])], rubrics));
+    const cols = head!.split(",");
+    expect(new Set(cols).size).toBe(cols.length);
+  });
+
   it("neutralises cells a spreadsheet would run as formulas", () => {
     expect(csvCell("=1+1")).toBe("'=1+1");
     expect(csvCell("-5")).toBe("'-5");

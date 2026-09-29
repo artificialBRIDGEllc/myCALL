@@ -54,7 +54,15 @@ export function callsCsv(calls: ExportCall[], rubricFor: RubricLookup): string {
   // Every header must be unique, or spreadsheet tools that map by header mix columns up.
   const count = new Map<string, number>();
   for (const n of [...FIXED, ...columns.map((c) => c.name)]) count.set(n, (count.get(n) ?? 0) + 1);
-  for (const c of columns) if (count.get(c.name)! > 1) c.name = `${c.name} [${c.id}]`;
+  for (const c of columns) if (count.get(c.name)! > 1) c.name = multi ? `${c.name} [${c.key}]` : `${c.name} [${c.id}]`;
+  // Last resort (names deliberately shaped like another column's suffix): number repeats.
+  const used = new Set(FIXED);
+  for (const c of columns) {
+    let name = c.name;
+    for (let n = 2; used.has(name); n++) name = `${c.name} (${n})`;
+    c.name = name;
+    used.add(name);
+  }
   const header = [...FIXED, ...columns.map((c) => c.name)];
   const rows = calls.map((call) => {
     const r = call.result;
