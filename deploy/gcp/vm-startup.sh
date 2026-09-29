@@ -74,5 +74,7 @@ COMPOSE
 
 docker compose -f /etc/mycall/compose.yml pull -q
 docker compose -f /etc/mycall/compose.yml up -d --remove-orphans
+# Caddy doesn't watch its config file; reload so a changed DOMAIN takes effect.
+docker compose -f /etc/mycall/compose.yml exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 docker image prune -f >/dev/null
 echo "myCALL is running at https://$DOMAIN"

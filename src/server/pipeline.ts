@@ -6,6 +6,7 @@ import { builtInRubrics } from "../rubrics/index.js";
 import { applyRoleMap, swapRoles } from "../stt/roles.js";
 import { transcribeRecording, wavChannels } from "../stt/deepgram.js";
 import type { AppConfig } from "./config.js";
+import type { ExportCall } from "./csv.js";
 import type { FinalSummary, StoredCall, Store } from "./db.js";
 
 /** A review request that can't be applied; `status` is the HTTP status to return. */
@@ -141,6 +142,15 @@ export class Pipeline {
     const call = this.store.getCall(callId);
     if (!call) return null;
     return this.toDetail(call);
+  }
+
+  /** The final (reviewed) result without transcript or review log, for spreadsheets. */
+  exportRow(callId: string): ExportCall | null {
+    const call = this.store.getCall(callId, false);
+    if (!call) return null;
+    const { autoResult, audioPath: _a, audioMime: _m, transcript: _t, review, ...rest } = call;
+    const rubric = autoResult ? this.rubric(autoResult.rubricId) : undefined;
+    return { ...rest, result: autoResult && rubric ? applyReview(rubric, autoResult, review) : autoResult };
   }
 
   setOverride(callId: string, criterionId: string, input: { status: string; fraction?: number; note: string; reviewer: string }): CallDetail {

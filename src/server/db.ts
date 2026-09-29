@@ -207,12 +207,14 @@ export class Store {
     return rows.map(toRecord);
   }
 
-  getCall(id: string): StoredCall | null {
-    const row = this.db.prepare(`SELECT * FROM calls WHERE id = ? AND org_id = ?`).get(id, this.orgId) as unknown as CallRow | undefined;
+  /** withTranscript=false skips reading and parsing the transcript (bulk exports). */
+  getCall(id: string, withTranscript = true): StoredCall | null {
+    const cols = withTranscript ? "*" : "id, title, agent_name, source, status, created_at, duration_sec, rubric_id, audio_path, audio_mime, score, compliance, error, review_state, open_review, result_json, review_json";
+    const row = this.db.prepare(`SELECT ${cols} FROM calls WHERE id = ? AND org_id = ?`).get(id, this.orgId) as unknown as CallRow | undefined;
     if (!row) return null;
     return {
       ...toRecord(row),
-      transcript: row.transcript_json ? (JSON.parse(row.transcript_json) as Transcript) : null,
+      transcript: withTranscript && row.transcript_json ? (JSON.parse(row.transcript_json) as Transcript) : null,
       autoResult: row.result_json ? (JSON.parse(row.result_json) as ScoreResult) : null,
       review: row.review_json ? (JSON.parse(row.review_json) as CallReview) : null,
       audioPath: row.audio_path,
