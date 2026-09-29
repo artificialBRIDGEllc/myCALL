@@ -90,6 +90,22 @@ export const api = {
   lock: (id: string, reviewer: string, note: string) => request<CallDetail>(`/api/calls/${id}/lock`, { method: "POST", body: JSON.stringify({ reviewer, note }) }),
   unlock: (id: string, reviewer: string, note: string) => request<CallDetail>(`/api/calls/${id}/unlock`, { method: "POST", body: JSON.stringify({ reviewer, note }) }),
   calibration: (rubricId: string) => request<Calibration>(`/api/calibration/${encodeURIComponent(rubricId)}`),
+  /** Download every call's results as a CSV spreadsheet. */
+  downloadResults: async () => {
+    const token = getToken();
+    const res = await fetch("/api/calls.csv", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!res.ok) throw new ApiError(`Download failed (${res.status})`, res.status);
+    const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "mycall-results.csv";
+    const url = URL.createObjectURL(await res.blob());
+    const a = Object.assign(document.createElement("a"), { href: url, download: name });
+    try {
+      document.body.appendChild(a); // some browsers ignore clicks on detached links
+      a.click();
+    } finally {
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000); // after the browser has started the download
+    }
+  },
   /** Short-lived signed URL for things that can't send headers (audio player, downloads). */
   signedUrl: async (path: string) => (await request<{ url: string }>("/api/sign", { method: "POST", body: JSON.stringify({ path }) })).url,
 };

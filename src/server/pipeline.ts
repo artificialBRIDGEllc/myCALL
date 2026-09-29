@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import type { Calibration, CallDetail, CallReview, CriterionOverride, ReviewEvent, ReviewedStatus, Rubric, ScoreResult, Transcript } from "../core/types.js";
-import { applyReview, calibrate, emptyReview } from "../engine/review.js";
+import { applyOverrides, applyReview, calibrate, emptyReview } from "../engine/review.js";
 import { scoreCall } from "../engine/score.js";
 import { builtInRubrics } from "../rubrics/index.js";
 import { applyRoleMap, swapRoles } from "../stt/roles.js";
 import { transcribeRecording, wavChannels } from "../stt/deepgram.js";
 import type { AppConfig } from "./config.js";
-import type { FinalSummary, StoredCall, Store } from "./db.js";
+import type { ExportCall } from "./csv.js";
+import type { FinalSummary, FinalTotals, StoredCall, Store } from "./db.js";
 
 /** A review request that can't be applied; `status` is the HTTP status to return. */
 export class ReviewError extends Error {
@@ -35,7 +36,16 @@ export class Pipeline {
     private store: Store,
     private config: AppConfig,
     private concurrency = 3,
-  ) {}
+  ) {
+    // Keep every rubric version in use (built-in and custom, including ones saved before version
+    // history existed), and save final totals for
+    // calls scored before totals were stored, while their rubric version is still known.
+    for (const r of [...builtInRubrics, ...store.listRubrics()]) store.archiveRubric(r);
+    for (const c of store.callsMissingTotals()) {
+      const rubric = this.rubricFor(c.autoResult);
+      if (rubric) store.setFinalTotals(c.id, totalsOf(applyReview(rubric, c.autoResult, c.review)));
+    }
+  }
 
   rubrics(): Rubric[] {
     const custom = this.store.listRubrics();
@@ -45,6 +55,17 @@ export class Pipeline {
 
   rubric(id: string): Rubric | undefined {
     return this.rubrics().find((r) => r.id === id);
+  }
+
+  /** The exact rubric version a result was graded with (current, or a kept older version). */
+  rubricVersion(id: string, version: string): Rubric | undefined {
+    const current = this.rubric(id);
+    if (current?.version === version) return current;
+    return this.store.rubricVersion(id, version) ?? undefined;
+  }
+
+  private rubricFor(auto: ScoreResult): Rubric | undefined {
+    return this.rubricVersion(auto.rubricId, auto.rubricVersion);
   }
 
   /** Recorded audio: transcribe, then score. */
@@ -114,8 +135,11 @@ export class Pipeline {
    * different rubric. Returns the final (reviewed) result.
    */
   saveScored(callId: string, rubric: Rubric, auto: ScoreResult): ScoreResult {
-    let review = this.store.getCall(callId)?.review ?? null;
-    if (review && review.rubricId !== rubric.id) {
+    const previous = this.store.getCall(callId);
+    let review = previous?.review ?? null;
+    // Decisions only carry over to the same rubric *version*: a new version may change what an item means.
+    const sameVersion = review?.rubricId === rubric.id && (!previous?.autoResult || previous.autoResult.rubricVersion === auto.rubricVersion);
+    if (review && !sameVersion) {
       const dropped = Object.keys(review.overrides).length;
       if (dropped) {
         this.store.addReviewEvent({
@@ -125,7 +149,7 @@ export class Pipeline {
           fromStatus: null,
           toStatus: null,
           reviewer: "system",
-          note: `Rescored with rubric "${rubric.id}"; ${dropped} review decision(s) made against "${review.rubricId}" were cleared.`,
+          note: `Rescored with rubric "${rubric.id}" v${auto.rubricVersion}; ${dropped} review decision(s) made against "${review.rubricId}"${previous?.autoResult ? ` v${previous.autoResult.rubricVersion}` : ""} were cleared.`,
           at: new Date().toISOString(),
         });
       }
@@ -141,6 +165,14 @@ export class Pipeline {
     const call = this.store.getCall(callId);
     if (!call) return null;
     return this.toDetail(call);
+  }
+
+  /** Every call's final (reviewed) result, without transcripts or review logs, for spreadsheets. */
+  exportRows(): ExportCall[] {
+    return this.store.listForExport().map((call) => {
+      const { autoResult: _r, audioPath: _a, audioMime: _m, transcript: _t, review: _v, ...rest } = call;
+      return { ...rest, result: this.finalResult(call) };
+    });
   }
 
   setOverride(callId: string, criterionId: string, input: { status: string; fraction?: number; note: string; reviewer: string }): CallDetail {
@@ -196,8 +228,8 @@ export class Pipeline {
     if (!call) throw new ReviewError(404, "Call not found.");
     if (!call.review?.locked) throw new ReviewError(409, "This call isn't signed off.");
     if (!reviewer.trim() || !note.trim()) throw new ReviewError(400, "Add your name and the reason for reopening.");
-    const rubric = this.rubric(call.review.rubricId);
-    if (!rubric || !call.autoResult) throw new ReviewError(409, "This call's rubric no longer exists.");
+    const rubric = call.autoResult ? this.rubricFor(call.autoResult) : undefined;
+    if (!rubric || !call.autoResult) throw new ReviewError(409, "The rubric version this call was graded with is no longer available.");
     const review: CallReview = { ...call.review, locked: false, lockedBy: null, lockedAt: null };
     this.log(callId, "unlock", null, null, null, reviewer.trim(), note.trim());
     return this.commitReview(call, rubric, call.autoResult, review);
@@ -216,8 +248,8 @@ export class Pipeline {
     const call = this.store.getCall(callId);
     if (!call) throw new ReviewError(404, "Call not found.");
     if (call.status !== "scored" || !call.autoResult) throw new ReviewError(409, "This call hasn't finished scoring yet.");
-    const rubric = this.rubric(call.autoResult.rubricId);
-    if (!rubric) throw new ReviewError(409, "This call's rubric no longer exists.");
+    const rubric = this.rubricFor(call.autoResult);
+    if (!rubric) throw new ReviewError(409, "The rubric version this call was graded with is no longer available.");
     const review = call.review && call.review.rubricId === rubric.id ? structuredClone(call.review) : emptyReview(rubric.id);
     if (review.locked) throw new ReviewError(409, `Signed off by ${review.lockedBy}. Reopen it to make changes.`);
     return { call, rubric, auto: call.autoResult, review };
@@ -242,10 +274,36 @@ export class Pipeline {
   }
 
   private toDetail(call: StoredCall): CallDetail {
-    const { autoResult, audioPath: _a, audioMime: _m, ...rest } = call;
-    const rubric = autoResult ? this.rubric(autoResult.rubricId) : undefined;
-    const result = autoResult && rubric ? applyReview(rubric, autoResult, call.review) : autoResult;
-    return { ...rest, result, reviewLog: this.store.reviewLog(call.id) };
+    const { autoResult: _r, audioPath: _a, audioMime: _m, ...rest } = call;
+    return { ...rest, result: this.finalResult(call), reviewLog: this.store.reviewLog(call.id) };
+  }
+
+  /**
+   * Automatic result + human overrides. Re-totalled only against the rubric version the call was
+   * graded with; if that rubric has since been edited or deleted, the overrides are still shown
+   * per item and the headline score/compliance come from the totals saved when the review was made.
+   */
+  private finalResult(call: StoredCall): ScoreResult | null {
+    const auto = call.autoResult;
+    if (!auto) return null;
+    const rubric = this.rubricFor(auto);
+    if (rubric) return applyReview(rubric, auto, call.review);
+    const criteria = applyOverrides(auto, call.review);
+    if (criteria === auto.criteria) return auto;
+    // The complete reviewed totals were saved when the review was made; use them as a whole.
+    if (call.finalTotals) return { ...auto, criteria, ...call.finalTotals };
+    // Rows saved before totals were stored: best effort from the list columns.
+    const status = new Map(criteria.map((c) => [c.criterionId, c.status]));
+    const compliance = call.compliance ?? auto.compliance;
+    return {
+      ...auto,
+      criteria,
+      score: call.score ?? auto.score,
+      compliance,
+      passed: compliance === "pass" && auto.passed,
+      criticalFailures: auto.criticalFailures.filter((id) => status.get(id) === "fail" || status.get(id) === "partial"),
+      needsReview: auto.needsReview.filter((id) => status.get(id) === "needs_review"),
+    };
   }
 
   private enqueue(callId: string, job: () => Promise<void>): void {
@@ -272,9 +330,14 @@ export class Pipeline {
   }
 }
 
+function totalsOf(final: ScoreResult): FinalTotals {
+  return { score: final.score, passed: final.passed, compliance: final.compliance, criticalFailures: final.criticalFailures, needsReview: final.needsReview };
+}
+
 function summaryOf(final: ScoreResult, review: CallReview | null): FinalSummary {
   const touched = review && (review.locked || Object.keys(review.overrides).length > 0);
   return {
+    totals: totalsOf(final),
     score: final.score,
     compliance: final.compliance,
     openReviewItems: final.needsReview.length,

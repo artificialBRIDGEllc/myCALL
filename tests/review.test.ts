@@ -3,13 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { CallDetail, Calibration, CallReview } from "../src/core/types.js";
+import type { CallDetail, Calibration, CallReview, Rubric } from "../src/core/types.js";
 import { applyReview, calibrate, emptyReview } from "../src/engine/review.js";
 import { scoreCall } from "../src/engine/score.js";
 import { medicareRubric } from "../src/rubrics/index.js";
 import { sampleTranscript } from "../src/rubrics/sample-call.js";
 import { buildApp, type App } from "../src/server/app.js";
 import { Store } from "../src/server/db.js";
+import { Pipeline } from "../src/server/pipeline.js";
 
 describe("applyReview", () => {
   it("overrides grades, re-totals the score and compliance, and keeps the automatic grade visible", async () => {
@@ -89,6 +90,97 @@ describe("review API", () => {
   afterAll(async () => {
     await ctx.app.close();
     fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("keeps a reviewed call's totals when its rubric is edited afterwards", async () => {
+    const base_ = (await (await fetch(`${base}/api/rubrics/medicare-tpmo`)).json()) as Rubric;
+    const v1 = { ...base_, id: "custom-tpmo", name: "Custom TPMO", version: "1" };
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201);
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await send("POST", "/api/calls", { transcript, rubricId: "custom-tpmo" })).json()) as { id: string };
+    for (let i = 0; i < 100 && (await call(id)).status === "processing"; i++) await new Promise((r) => setTimeout(r, 20));
+    const reviewed = (await (await send("PUT", `/api/calls/${id}/review/no_pressure`, { status: "partial", fraction: 0.5, note: "Corrected it right after.", reviewer: "Pat" })).json()) as CallDetail;
+
+    // v2 makes that item a critical compliance gate; the old call must not be re-judged by it.
+    const v2 = { ...v1, version: "2", criteria: v1.criteria.map((c) => (c.id === "no_pressure" ? { ...c, severity: "critical" as const } : c)) };
+    expect((await send("POST", "/api/rubrics", v2)).status).toBe(201);
+    const after = await call(id);
+    expect(after.result!.score).toBe(reviewed.result!.score);
+    expect(after.result!.compliance).toBe(reviewed.result!.compliance);
+    expect(after.result!.criticalFailures).not.toContain("no_pressure");
+    expect(after.result!.criteria.find((c) => c.criterionId === "no_pressure")).toMatchObject({ status: "partial", source: "human" });
+
+    // Deleting the rubric must not throw away the human decisions either.
+    expect((await fetch(`${base}/api/rubrics/custom-tpmo`, { method: "DELETE" })).status).toBe(204);
+    const orphaned = await call(id);
+    expect(orphaned.result!.score).toBe(reviewed.result!.score);
+    expect(orphaned.result!.criteria.find((c) => c.criterionId === "no_pressure")).toMatchObject({ status: "partial", source: "human" });
+  });
+
+  it("refuses to change a rubric without a new version, and keeps a reviewer's critical fail after the rubric is deleted", async () => {
+    const base_ = (await (await fetch(`${base}/api/rubrics/medicare-tpmo`)).json()) as Rubric;
+    const v1 = { ...base_, id: "strict-tpmo", name: "Strict TPMO", version: "1" };
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201);
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201); // re-saving identical content is fine
+    const changed = { ...v1, criteria: v1.criteria.map((c) => (c.id === "recording_notice" ? { ...c, points: 99 } : c)) };
+    expect((await send("POST", "/api/rubrics", changed)).status).toBe(409);
+
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await send("POST", "/api/calls", { transcript, rubricId: "strict-tpmo" })).json()) as { id: string };
+    for (let i = 0; i < 100 && (await call(id)).status === "processing"; i++) await new Promise((r) => setTimeout(r, 20));
+    // The TPMO disclaimer passed automatically; the reviewer fails it (a critical item).
+    const reviewed = (await (await send("PUT", `/api/calls/${id}/review/tpmo_disclaimer`, { status: "fail", note: "Read too fast to be understood.", reviewer: "Pat" })).json()) as CallDetail;
+    expect(reviewed.result).toMatchObject({ compliance: "fail", passed: false });
+    expect(reviewed.result!.criticalFailures).toContain("tpmo_disclaimer");
+
+    expect((await fetch(`${base}/api/rubrics/strict-tpmo`, { method: "DELETE" })).status).toBe(204);
+    const orphaned = await call(id);
+    expect(orphaned.result).toMatchObject({ compliance: "fail", passed: false, score: reviewed.result!.score });
+    expect(orphaned.result!.criticalFailures).toContain("tpmo_disclaimer");
+  });
+
+  it("reviews an older call with the exact rubric version it was graded with", async () => {
+    const base_ = (await (await fetch(`${base}/api/rubrics/medicare-tpmo`)).json()) as Rubric;
+    const v1 = { ...base_, id: "versioned-tpmo", name: "Versioned TPMO", version: "1" };
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201);
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await send("POST", "/api/calls", { transcript, rubricId: "versioned-tpmo" })).json()) as { id: string };
+    for (let i = 0; i < 100 && (await call(id)).status === "processing"; i++) await new Promise((r) => setTimeout(r, 20));
+
+    // v2 drops "no_pressure" and makes "rapport" critical.
+    const v2 = { ...v1, version: "2", criteria: v1.criteria.filter((c) => c.id !== "no_pressure").map((c) => (c.id === "rapport" ? { ...c, severity: "critical" as const } : c)) };
+    expect((await send("POST", "/api/rubrics", v2)).status).toBe(201);
+
+    // The v1 call can still be reviewed on an item v2 no longer has...
+    expect((await send("PUT", `/api/calls/${id}/review/no_pressure`, { status: "pass", note: "Fair warning, not a scare tactic.", reviewer: "Pat" })).status).toBe(200);
+    // ...and is judged by v1, where failing "rapport" is not a compliance failure.
+    const r = (await (await send("PUT", `/api/calls/${id}/review/rapport`, { status: "fail", note: "Cold throughout.", reviewer: "Pat" })).json()) as CallDetail;
+    expect(r.result!.criticalFailures).not.toContain("rapport");
+  });
+
+  it("clears review decisions when a call is rescored with a newer version of its rubric", async () => {
+    const base_ = (await (await fetch(`${base}/api/rubrics/medicare-tpmo`)).json()) as Rubric;
+    const v1 = { ...base_, id: "rescore-tpmo", name: "Rescore TPMO", version: "1" };
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201);
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await send("POST", "/api/calls", { transcript, rubricId: "rescore-tpmo" })).json()) as { id: string };
+    for (let i = 0; i < 100 && (await call(id)).status === "processing"; i++) await new Promise((r) => setTimeout(r, 20));
+    await send("PUT", `/api/calls/${id}/review/no_pressure`, { status: "pass", note: "Fair warning.", reviewer: "Pat" });
+
+    // Same version: the decision survives a rescore.
+    await send("POST", `/api/calls/${id}/rescore`, {});
+    let after = await call(id);
+    for (let i = 0; i < 100 && after.status === "processing"; i++) after = (await new Promise((r) => setTimeout(r, 20)), await call(id));
+    expect(after.review?.overrides.no_pressure?.status).toBe("pass");
+
+    // New version: it is cleared and the clearing is logged.
+    expect((await send("POST", "/api/rubrics", { ...v1, version: "2", criteria: v1.criteria.map((c) => (c.id === "no_pressure" ? { ...c, severity: "critical" as const } : c)) })).status).toBe(201);
+    await send("POST", `/api/calls/${id}/rescore`, {});
+    after = await call(id);
+    for (let i = 0; i < 100 && after.status === "processing"; i++) after = (await new Promise((r) => setTimeout(r, 20)), await call(id));
+    expect(after.review).toBeNull();
+    expect(after.reviewLog.at(-1)).toMatchObject({ reviewer: "system", action: "revert" });
+    expect(after.reviewLog.at(-1)!.note).toContain("v2");
   });
 
   it("runs the full loop: grade open items, override, sign off, lock, reopen — all audited", async () => {
@@ -173,6 +265,50 @@ describe("review API", () => {
 });
 
 describe("migration", () => {
+  it("keeps custom rubrics saved before version history existed", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-rv-"));
+    const store = new Store(dir);
+    const custom = { ...medicareRubric, id: "legacy-custom", version: "7" };
+    store.saveRubric(custom);
+    const db = new DatabaseSync(path.join(dir, "mycall.db"));
+    db.exec("DELETE FROM rubric_versions"); // as if saved by the old code
+    db.close();
+    expect(store.rubricVersion("legacy-custom", "7")).toBeNull();
+    new Pipeline(store, { reviewer: null, deepgram: null } as never);
+    expect(store.rubricVersion("legacy-custom", "7")).toMatchObject({ id: "legacy-custom", version: "7" });
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("fills in saved totals for calls scored before totals were stored", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-backfill-"));
+    process.env.LOG_LEVEL = "silent";
+    const opts = { port: 0, host: "127.0.0.1", dataDir: dir, apiToken: null, deepgram: null, reviewer: null, maxUploadMb: 5, webDir: null, demoSpeed: 100 };
+    let ctx = await buildApp(opts);
+    await ctx.app.listen({ port: 0, host: "127.0.0.1" });
+    let url = `http://127.0.0.1:${(ctx.app.server.address() as { port: number }).port}`;
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await fetch(`${url}/api/calls`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcript, rubricId: "medicare-tpmo" }) })).json()) as { id: string };
+    for (let i = 0; i < 100; i++) {
+      const c = (await (await fetch(`${url}/api/calls/${id}`)).json()) as CallDetail;
+      if (c.status !== "processing") break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await ctx.app.close();
+
+    const db = new DatabaseSync(path.join(dir, "mycall.db"));
+    db.exec("UPDATE calls SET final_json = NULL");
+    db.close();
+
+    ctx = await buildApp(opts); // startup backfills while the rubric version is known
+    await ctx.app.close();
+    const check = new DatabaseSync(path.join(dir, "mycall.db"));
+    const row = check.prepare("SELECT final_json FROM calls WHERE id = ?").get(id) as { final_json: string | null };
+    check.close();
+    expect(JSON.parse(row.final_json!)).toMatchObject({ compliance: expect.any(String), score: expect.any(Number) });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("upgrades a database created before human review existed", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-mig-"));
     const db = new DatabaseSync(path.join(dir, "mycall.db"));

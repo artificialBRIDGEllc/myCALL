@@ -13,6 +13,7 @@ import type { AppConfig } from "./config.js";
 import { Store } from "./db.js";
 import { handleLiveSocket } from "./live.js";
 import { Pipeline, ReviewError } from "./pipeline.js";
+import { callsCsv } from "./csv.js";
 
 const AUDIO_EXT = /\.(wav|mp3|m4a|mp4|aac|ogg|oga|opus|webm|flac|wma|amr|mpeg|mpga)$/i;
 const TRANSCRIPT_EXT = /\.(txt|vtt|srt|json)$/i;
@@ -128,6 +129,11 @@ export async function buildApp(config: AppConfig): Promise<App> {
   app.post("/api/rubrics", async (req, reply) => {
     try {
       const rubric = parseRubric(req.body);
+      // Stored grades point at a rubric id + version, so a changed definition needs a new version.
+      const existing = pipeline.rubricVersion(rubric.id, rubric.version);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(rubric)) {
+        return reply.code(409).send({ error: `Rubric "${rubric.id}" version ${rubric.version} already exists with different content. Give the edited rubric a new version.` });
+      }
       store.saveRubric(rubric);
       return reply.code(201).send(rubric);
     } catch (err) {
@@ -144,6 +150,17 @@ export async function buildApp(config: AppConfig): Promise<App> {
 
   // ---- Calls ----
   app.get("/api/calls", async () => store.listCalls());
+
+  /** Every call as a spreadsheet: one row per call, one column per checklist item (final grades). */
+  app.get("/api/calls.csv", async (_req, reply) => {
+    const rows = pipeline.exportRows();
+    const stamp = new Date().toISOString().slice(0, 10);
+    return reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="mycall-results-${stamp}.csv"`)
+      .header("Cache-Control", "no-store")
+      .send(callsCsv(rows, (id, version) => pipeline.rubricVersion(id, version)));
+  });
 
   app.get<{ Params: { id: string } }>("/api/calls/:id", async (req, reply) => pipeline.detail(req.params.id) ?? reply.code(404).send({ error: "Call not found" }));
 

@@ -93,6 +93,7 @@ npm start                   # http://localhost:8787
 ```
 
 - **Development:** `npm run dev` runs the API on :8787 and Vite on :5173.
+- **Google Cloud (for real calls, HIPAA-eligible):** follow [deploy/gcp/README.md](deploy/gcp/README.md). It is one command in Cloud Shell and takes about 20 minutes, most of it waiting.
 - **Docker:**
   ```bash
   docker build -t mycall . && docker run -p 8787:8787 -v mycall-data:/data --env-file .env mycall
@@ -102,6 +103,7 @@ npm start                   # http://localhost:8787
 |---|---|
 | `DEEPGRAM_API_KEY` | Audio uploads and live calls. Transcript uploads and the demo work without it. |
 | `ANTHROPIC_API_KEY` | AI review of judgment skills, paraphrase confirmation, summary, coaching and CRM fields. Default model is `claude-opus-5`; set `CLAUDE_MODEL=claude-sonnet-5` for lower cost per call. |
+| `DEEPGRAM_MIP_OPT_OUT` | Default `true`: every Deepgram request opts out of its model-training program, because calls contain health information. Set `false` only for non-sensitive audio. |
 | `MYCALL_API_TOKEN` | **Required before exposing the server.** Every API call must present it. |
 
 ## Chrome extension (live calls without screen-share prompts)
@@ -140,6 +142,7 @@ It exits non-zero if any call fails.
 | `GET /api/calls`, `GET /api/calls/:id` | List calls, or get one call's detail (transcript + result). |
 | `POST /api/calls/:id/rescore` | `{rubricId?, swapRoles?}` |
 | `POST /api/sign` | `{path}` returns a short-lived signed URL for audio, export or the live WebSocket (places that can't send an Authorization header). The token itself never goes in a URL. |
+| `GET /api/calls.csv` | Every call as a spreadsheet: one row per call, one column per checklist item, with the quotes behind each problem (the **Download results** button). |
 | `GET /api/calls/:id/audio` | Recording (supports seeking). |
 | `GET /api/calls/:id/export` | Evidence packet (JSON) with an `X-Content-SHA256` header. |
 | `GET/POST/DELETE /api/rubrics` | Custom rubrics (validated). |

@@ -30,7 +30,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-cap-"));
 process.env.LOG_LEVEL = "silent";
 const { app } = await buildApp({
   port: 0, host: "127.0.0.1", dataDir, apiToken: null, reviewer: null, maxUploadMb: 10, webDir: path.resolve("dist/web"), demoSpeed: 1,
-  deepgram: { apiKey: "x", model: "nova-3", language: "en-US", baseUrl: `http://127.0.0.1:${dg.address().port}` },
+  deepgram: { apiKey: "x", model: "nova-3", language: "en-US", baseUrl: `http://127.0.0.1:${dg.address().port}`, mipOptOut: true },
 });
 await app.listen({ port: 0, host: "127.0.0.1" });
 const base = `http://127.0.0.1:${app.server.address().port}`;

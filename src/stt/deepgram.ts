@@ -11,6 +11,8 @@ export interface DeepgramConfig {
   model: string;
   language: string;
   baseUrl: string;
+  /** Opt out of Deepgram's Model Improvement Program, so call audio isn't kept to train models. */
+  mipOptOut: boolean;
 }
 
 export function deepgramFromEnv(env: NodeJS.ProcessEnv = process.env): DeepgramConfig | null {
@@ -20,6 +22,8 @@ export function deepgramFromEnv(env: NodeJS.ProcessEnv = process.env): DeepgramC
     model: env.DEEPGRAM_MODEL || "nova-3",
     language: env.DEEPGRAM_LANGUAGE || "en-US",
     baseUrl: env.DEEPGRAM_BASE_URL || "https://api.deepgram.com",
+    // Calls carry health information: opted out unless explicitly turned back on.
+    mipOptOut: env.DEEPGRAM_MIP_OPT_OUT !== "false",
   };
 }
 
@@ -46,6 +50,7 @@ export async function transcribeRecording(
     utterances: "true",
     utt_split: "1.0",
   });
+  if (cfg.mipOptOut) params.set("mip_opt_out", "true");
   if (separateChannels) params.set("multichannel", "true");
   else params.set("diarize", "true");
 
@@ -176,6 +181,7 @@ export function openDeepgramLive(
     endpointing: "300",
     utterance_end_ms: "1200",
   });
+  if (cfg.mipOptOut) params.set("mip_opt_out", "true");
   const url = `${cfg.baseUrl.replace(/^http/, "ws")}/v1/listen?${params}`;
   const ws = new WebSocket(url, { headers: { Authorization: `Token ${cfg.apiKey}` } });
   const assembler = new SegmentAssembler(cb);
