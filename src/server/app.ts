@@ -149,7 +149,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
   /** Every call as a spreadsheet: one row per call, one column per checklist item (final grades). */
   app.get("/api/calls.csv", async (_req, reply) => {
     const details = store
-      .listCalls(10_000)
+      .listCalls(-1) // SQLite: no limit, every call
       .map((c) => pipeline.detail(c.id))
       .filter((d): d is NonNullable<typeof d> => d !== null);
     const stamp = new Date().toISOString().slice(0, 10);

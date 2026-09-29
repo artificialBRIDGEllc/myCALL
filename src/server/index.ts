@@ -2,6 +2,11 @@ import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
+// Deployments that hold real calls set MYCALL_REQUIRE_TOKEN=true: refuse to start open rather than expose them.
+if (process.env.MYCALL_REQUIRE_TOKEN === "true" && !config.apiToken) {
+  console.error("MYCALL_REQUIRE_TOKEN is set but MYCALL_API_TOKEN is empty. Refusing to start without a password.");
+  process.exit(1);
+}
 const { app } = await buildApp(config);
 
 app.log.info(

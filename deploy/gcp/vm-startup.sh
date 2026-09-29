@@ -34,11 +34,17 @@ secret() {
     python3 -c 'import base64,json,sys; print(base64.b64decode(json.load(sys.stdin)["payload"]["data"]).decode(), end="")'
 }
 install -d -m 700 /etc/mycall
+# Read both secrets first; never write (or start with) an empty password.
+DG_KEY=$(secret mycall-deepgram-key)
+API_TOKEN=$(secret mycall-api-token)
+if [ -z "$DG_KEY" ] || [ -z "$API_TOKEN" ]; then
+  echo "Could not read secrets from Secret Manager; not starting myCALL." >&2
+  exit 1
+fi
 umask 077
-cat > /etc/mycall/mycall.env <<ENV
-DEEPGRAM_API_KEY=$(secret mycall-deepgram-key)
-MYCALL_API_TOKEN=$(secret mycall-api-token)
-ENV
+printf 'DEEPGRAM_API_KEY=%s\nMYCALL_API_TOKEN=%s\nMYCALL_REQUIRE_TOKEN=true\n' "$DG_KEY" "$API_TOKEN" > /etc/mycall/mycall.env.new
+mv /etc/mycall/mycall.env.new /etc/mycall/mycall.env
+umask 022
 
 cat > /etc/mycall/Caddyfile <<CADDY
 $DOMAIN {

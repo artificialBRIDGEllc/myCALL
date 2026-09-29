@@ -79,7 +79,9 @@ exists gcloud compute disks describe mycall-data --zone "$ZONE" --project "$PROJ
 exists gcloud compute resource-policies describe mycall-nightly --region "$REGION" --project "$PROJECT" ||
   gcloud compute resource-policies create snapshot-schedule mycall-nightly --region "$REGION" \
     --daily-schedule --start-time 07:00 --max-retention-days 14 --on-source-disk-delete keep-auto-snapshots --project "$PROJECT"
-gcloud compute disks add-resource-policies mycall-data --resource-policies mycall-nightly --zone "$ZONE" --project "$PROJECT" >/dev/null 2>&1 || true
+if ! gcloud compute disks describe mycall-data --zone "$ZONE" --project "$PROJECT" --format='value(resourcePolicies)' | grep -q mycall-nightly; then
+  gcloud compute disks add-resource-policies mycall-data --resource-policies mycall-nightly --zone "$ZONE" --project "$PROJECT"
+fi
 
 step "Starting the server"
 METADATA="mycall-image=$IMAGE"
