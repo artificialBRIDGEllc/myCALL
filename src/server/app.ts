@@ -13,6 +13,7 @@ import type { AppConfig } from "./config.js";
 import { Store } from "./db.js";
 import { handleLiveSocket } from "./live.js";
 import { Pipeline, ReviewError } from "./pipeline.js";
+import { callsCsv } from "./csv.js";
 
 const AUDIO_EXT = /\.(wav|mp3|m4a|mp4|aac|ogg|oga|opus|webm|flac|wma|amr|mpeg|mpga)$/i;
 const TRANSCRIPT_EXT = /\.(txt|vtt|srt|json)$/i;
@@ -144,6 +145,20 @@ export async function buildApp(config: AppConfig): Promise<App> {
 
   // ---- Calls ----
   app.get("/api/calls", async () => store.listCalls());
+
+  /** Every call as a spreadsheet: one row per call, one column per checklist item (final grades). */
+  app.get("/api/calls.csv", async (_req, reply) => {
+    const details = store
+      .listCalls(10_000)
+      .map((c) => pipeline.detail(c.id))
+      .filter((d): d is NonNullable<typeof d> => d !== null);
+    const stamp = new Date().toISOString().slice(0, 10);
+    return reply
+      .header("Content-Type", "text/csv; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="mycall-results-${stamp}.csv"`)
+      .header("Cache-Control", "no-store")
+      .send(callsCsv(details, pipeline.rubrics()));
+  });
 
   app.get<{ Params: { id: string } }>("/api/calls/:id", async (req, reply) => pipeline.detail(req.params.id) ?? reply.code(404).send({ error: "Call not found" }));
 

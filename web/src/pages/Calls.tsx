@@ -54,7 +54,12 @@ export function CallsPage() {
           <h1 className="text-2xl font-bold">Calls</h1>
           <p className="text-sm text-slate-500">Every scored call, with the evidence behind each grade.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {calls.length > 0 && (
+            <button className="btn-ghost" onClick={() => api.downloadResults().catch((e: Error) => setError(e.message))} title="One row per call, one column per checklist item. Opens in Excel or Google Sheets.">
+              Download results
+            </button>
+          )}
           <a href="#/live" className="btn-ghost">
             Start live call
           </a>

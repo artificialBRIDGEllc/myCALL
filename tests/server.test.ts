@@ -102,7 +102,7 @@ beforeAll(async () => {
     host: "127.0.0.1",
     dataDir,
     apiToken: "test-token",
-    deepgram: { apiKey: "dg-test", model: "nova-3", language: "en-US", baseUrl: fake.url },
+    deepgram: { apiKey: "dg-test", model: "nova-3", language: "en-US", baseUrl: fake.url, mipOptOut: true },
     reviewer: null,
     maxUploadMb: 5,
     webDir: null,
@@ -162,6 +162,7 @@ describe("API", () => {
     const call = await waitScored(((await res.json()) as { id: string }).id);
     expect(call.status).toBe("scored");
     expect(fake.lastQuery()).toContain("diarize=true");
+    expect(fake.lastQuery()).toContain("mip_opt_out=true");
     // Diarized speaker 1 says the agent lines -> detected as the agent.
     expect(call.transcript!.roleMap).toEqual({ "1": "agent", "0": "customer" });
     const tpmo = call.result!.criteria.find((c) => c.criterionId === "tpmo_disclaimer")!;
@@ -254,6 +255,7 @@ describe("live calls", () => {
     const pcm = Buffer.alloc(16000 * 2 * 2 * 0.5); // 0.5 s of stereo silence
     const msgs = await collectLive({ type: "start", rubricId: "medicare-tpmo", sampleRate: 16000, channels: 2, agentName: "Sam" }, [pcm]);
     expect(fake.lastQuery()).toContain("multichannel=true");
+    expect(fake.lastQuery()).toContain("mip_opt_out=true");
     const utts = msgs.filter((m) => m.type === "utterance").map((m) => (m as Extract<LiveServerMessage, { type: "utterance" }>).utterance);
     expect(utts.map((u) => [u.role, u.text])).toEqual([
       ["agent", "Hello, this is Sam, a licensed agent. Honestly you have to decide today."],
@@ -301,5 +303,24 @@ describe("live calls", () => {
     expect(final).toBeTruthy();
     expect(final.result.criteria.find((c) => c.criterionId === "no_superlatives")!.status).toBe("fail");
     expect(msgs.filter((m) => m.type === "alert").length).toBeGreaterThan(2);
+  });
+});
+
+describe("results spreadsheet", () => {
+  it("exports every call as CSV with one column per checklist item, and needs auth", async () => {
+    expect((await fetch(`${base}/api/calls.csv`)).status).toBe(401);
+    const transcript = "Agent: Hi, I'm calling from Medicare about your benefits.\nCustomer: Oh okay?\nAgent: You have to decide today.";
+    const { id } = (await (await fetch(`${base}/api/calls`, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ transcript, rubricId: "medicare-tpmo", title: "=HYPERLINK(\"x\")" }) })).json()) as { id: string };
+    await waitScored(id);
+    const res = await fetch(`${base}/api/calls.csv`, { headers: auth });
+    expect(res.headers.get("content-type")).toContain("text/csv");
+    const text = await res.text();
+    const [head, ...rows] = text.replace(/^﻿/, "").trim().split("\r\n");
+    expect(head).toContain("Score,Compliance");
+    expect(head).toContain("TPMO disclaimer within the first minute");
+    const row = rows.find((r) => r.includes("HYPERLINK"))!;
+    expect(row.startsWith(`"'=HYPERLINK(""x"")"`)).toBe(true); // never runs as a formula
+    expect(row).toContain("fail");
+    expect(row).toContain("No high-pressure or scare tactics: \"");
   });
 });
