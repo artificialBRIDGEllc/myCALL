@@ -17,7 +17,8 @@ const clock = (sec: number | null) => {
 /** RFC 4180 quoting, plus a leading ' on cells a spreadsheet would run as a formula. */
 export function csvCell(value: unknown): string {
   let s = value == null ? "" : String(value);
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  // Spreadsheets also run a formula typed after leading spaces or line breaks.
+  if (/^[\s]*[=+\-@]/.test(s) || /^[\t\r\n]/.test(s)) s = `'${s}`;
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { CallDetail, Calibration, CallReview } from "../src/core/types.js";
+import type { CallDetail, Calibration, CallReview, Rubric } from "../src/core/types.js";
 import { applyReview, calibrate, emptyReview } from "../src/engine/review.js";
 import { scoreCall } from "../src/engine/score.js";
 import { medicareRubric } from "../src/rubrics/index.js";
@@ -89,6 +89,25 @@ describe("review API", () => {
   afterAll(async () => {
     await ctx.app.close();
     fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("keeps a reviewed call's totals when its rubric is edited afterwards", async () => {
+    const base_ = (await (await fetch(`${base}/api/rubrics/medicare-tpmo`)).json()) as Rubric;
+    const v1 = { ...base_, id: "custom-tpmo", name: "Custom TPMO", version: "1" };
+    expect((await send("POST", "/api/rubrics", v1)).status).toBe(201);
+    const transcript = sampleTranscript.utterances.map((u) => `${u.role === "agent" ? "Agent" : "Customer"}: ${u.text}`).join("\n");
+    const { id } = (await (await send("POST", "/api/calls", { transcript, rubricId: "custom-tpmo" })).json()) as { id: string };
+    for (let i = 0; i < 100 && (await call(id)).status === "processing"; i++) await new Promise((r) => setTimeout(r, 20));
+    const reviewed = (await (await send("PUT", `/api/calls/${id}/review/no_pressure`, { status: "partial", fraction: 0.5, note: "Corrected it right after.", reviewer: "Pat" })).json()) as CallDetail;
+
+    // v2 makes that item a critical compliance gate; the old call must not be re-judged by it.
+    const v2 = { ...v1, version: "2", criteria: v1.criteria.map((c) => (c.id === "no_pressure" ? { ...c, severity: "critical" as const } : c)) };
+    expect((await send("POST", "/api/rubrics", v2)).status).toBe(201);
+    const after = await call(id);
+    expect(after.result!.score).toBe(reviewed.result!.score);
+    expect(after.result!.compliance).toBe(reviewed.result!.compliance);
+    expect(after.result!.criticalFailures).not.toContain("no_pressure");
+    expect(after.result!.criteria.find((c) => c.criterionId === "no_pressure")).toMatchObject({ status: "partial", source: "human" });
   });
 
   it("runs the full loop: grade open items, override, sign off, lock, reopen — all audited", async () => {

@@ -65,6 +65,9 @@ describe("results spreadsheet", () => {
   it("neutralises cells a spreadsheet would run as formulas", () => {
     expect(csvCell("=1+1")).toBe("'=1+1");
     expect(csvCell("-5")).toBe("'-5");
+    expect(csvCell("  =1+1")).toBe("'  =1+1");
+    expect(csvCell("\n@SUM(A1)")).toBe(`"'\n@SUM(A1)"`);
+    expect(csvCell("Dana Brooks")).toBe("Dana Brooks");
     expect(csvCell('a,"b"')).toBe('"a,""b"""');
   });
 });

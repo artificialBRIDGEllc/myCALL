@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import type { Calibration, CallDetail, CallReview, CriterionOverride, ReviewEvent, ReviewedStatus, Rubric, ScoreResult, Transcript } from "../core/types.js";
-import { applyReview, calibrate, emptyReview } from "../engine/review.js";
+import { applyOverrides, applyReview, calibrate, emptyReview } from "../engine/review.js";
 import { scoreCall } from "../engine/score.js";
 import { builtInRubrics } from "../rubrics/index.js";
 import { applyRoleMap, swapRoles } from "../stt/roles.js";
@@ -144,13 +144,12 @@ export class Pipeline {
     return this.toDetail(call);
   }
 
-  /** The final (reviewed) result without transcript or review log, for spreadsheets. */
-  exportRow(callId: string): ExportCall | null {
-    const call = this.store.getCall(callId, false);
-    if (!call) return null;
-    const { autoResult, audioPath: _a, audioMime: _m, transcript: _t, review, ...rest } = call;
-    const rubric = autoResult ? this.rubric(autoResult.rubricId) : undefined;
-    return { ...rest, result: autoResult && rubric ? applyReview(rubric, autoResult, review) : autoResult };
+  /** Every call's final (reviewed) result, without transcripts or review logs, for spreadsheets. */
+  exportRows(): ExportCall[] {
+    return this.store.listForExport().map((call) => {
+      const { autoResult: _r, audioPath: _a, audioMime: _m, transcript: _t, review: _v, ...rest } = call;
+      return { ...rest, result: this.finalResult(call) };
+    });
   }
 
   setOverride(callId: string, criterionId: string, input: { status: string; fraction?: number; note: string; reviewer: string }): CallDetail {
@@ -252,10 +251,31 @@ export class Pipeline {
   }
 
   private toDetail(call: StoredCall): CallDetail {
-    const { autoResult, audioPath: _a, audioMime: _m, ...rest } = call;
-    const rubric = autoResult ? this.rubric(autoResult.rubricId) : undefined;
-    const result = autoResult && rubric ? applyReview(rubric, autoResult, call.review) : autoResult;
-    return { ...rest, result, reviewLog: this.store.reviewLog(call.id) };
+    const { autoResult: _r, audioPath: _a, audioMime: _m, ...rest } = call;
+    return { ...rest, result: this.finalResult(call), reviewLog: this.store.reviewLog(call.id) };
+  }
+
+  /**
+   * Automatic result + human overrides. Re-totalled only against the rubric version the call was
+   * graded with; if that rubric has since been edited or deleted, the overrides are still shown
+   * per item and the headline score/compliance come from the totals saved when the review was made.
+   */
+  private finalResult(call: StoredCall): ScoreResult | null {
+    const auto = call.autoResult;
+    if (!auto) return null;
+    const rubric = this.rubric(auto.rubricId);
+    if (rubric && rubric.version === auto.rubricVersion) return applyReview(rubric, auto, call.review);
+    const criteria = applyOverrides(auto, call.review);
+    if (criteria === auto.criteria) return auto;
+    const status = new Map(criteria.map((c) => [c.criterionId, c.status]));
+    return {
+      ...auto,
+      criteria,
+      score: call.score ?? auto.score,
+      compliance: call.compliance ?? auto.compliance,
+      criticalFailures: auto.criticalFailures.filter((id) => status.get(id) === "fail" || status.get(id) === "partial"),
+      needsReview: auto.needsReview.filter((id) => status.get(id) === "needs_review"),
+    };
   }
 
   private enqueue(callId: string, job: () => Promise<void>): void {

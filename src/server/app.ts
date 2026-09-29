@@ -148,10 +148,7 @@ export async function buildApp(config: AppConfig): Promise<App> {
 
   /** Every call as a spreadsheet: one row per call, one column per checklist item (final grades). */
   app.get("/api/calls.csv", async (_req, reply) => {
-    const rows = store
-      .listCalls(-1) // SQLite: no limit, every call
-      .map((c) => pipeline.exportRow(c.id))
-      .filter((d): d is NonNullable<typeof d> => d !== null);
+    const rows = pipeline.exportRows();
     const stamp = new Date().toISOString().slice(0, 10);
     return reply
       .header("Content-Type", "text/csv; charset=utf-8")

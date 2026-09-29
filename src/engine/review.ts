@@ -26,10 +26,10 @@ export function overrideFraction(o: CriterionOverride): number {
   return Math.min(0.9, Math.max(0.1, o.fraction ?? 0.5));
 }
 
-/** The final result: automatic grades with human overrides applied, re-totalled. */
-export function applyReview(rubric: Rubric, auto: ScoreResult, review: CallReview | null): ScoreResult {
-  if (!review || review.rubricId !== auto.rubricId || !Object.keys(review.overrides).length) return auto;
-  const criteria: CriterionResult[] = auto.criteria.map((c) => {
+/** The automatic criteria with each human override applied (original grade kept in `review.auto`). */
+export function applyOverrides(auto: ScoreResult, review: CallReview | null): CriterionResult[] {
+  if (!review || review.rubricId !== auto.rubricId) return auto.criteria;
+  return auto.criteria.map((c) => {
     const o = review.overrides[c.criterionId];
     if (!o) return c;
     const fraction = overrideFraction(o);
@@ -49,6 +49,12 @@ export function applyReview(rubric: Rubric, auto: ScoreResult, review: CallRevie
       },
     };
   });
+}
+
+/** The final result: automatic grades with human overrides applied, re-totalled against `rubric`. */
+export function applyReview(rubric: Rubric, auto: ScoreResult, review: CallReview | null): ScoreResult {
+  if (!review || review.rubricId !== auto.rubricId || !Object.keys(review.overrides).length) return auto;
+  const criteria = applyOverrides(auto, review);
   return { ...auto, ...summarize(rubric, criteria), criteria };
 }
 

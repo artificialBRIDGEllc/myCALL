@@ -98,8 +98,13 @@ export const api = {
     const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? "mycall-results.csv";
     const url = URL.createObjectURL(await res.blob());
     const a = Object.assign(document.createElement("a"), { href: url, download: name });
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    try {
+      document.body.appendChild(a); // some browsers ignore clicks on detached links
+      a.click();
+    } finally {
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000); // after the browser has started the download
+    }
   },
   /** Short-lived signed URL for things that can't send headers (audio player, downloads). */
   signedUrl: async (path: string) => (await request<{ url: string }>("/api/sign", { method: "POST", body: JSON.stringify({ path }) })).url,
