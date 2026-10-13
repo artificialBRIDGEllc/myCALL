@@ -13,9 +13,9 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+# Data lives in /data: mount a persistent volume there (Railway volume, docker -v, or the GCP disk).
 RUN mkdir -p /data && chown node:node /data
 USER node
-VOLUME ["/data"]
 EXPOSE 8787
 HEALTHCHECK CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "--disable-warning=ExperimentalWarning", "dist/server/server/index.js"]
