@@ -96,15 +96,15 @@ npm start                   # http://localhost:8787
 - **Google Cloud (for real calls, HIPAA-eligible):** follow [deploy/gcp/README.md](deploy/gcp/README.md). It is one command in Cloud Shell and takes about 20 minutes, most of it waiting.
 - **Docker:**
   ```bash
-  docker build -t mycall . && docker run -p 8787:8787 -v mycall-data:/data --env-file .env mycall
+  docker build -t mycall . && docker run -p 8787:8787 -v mycall-data:/data --env-file .env mycall   # .env must set MYCALL_API_TOKEN
   ```
 
 | Variable | Needed for |
 |---|---|
 | `DEEPGRAM_API_KEY` | Audio uploads and live calls. Transcript uploads and the demo work without it. |
-| `ANTHROPIC_API_KEY` | AI review of judgment skills, paraphrase confirmation, summary, coaching and CRM fields. Default model is `claude-opus-5`; set `CLAUDE_MODEL=claude-sonnet-5` for lower cost per call. |
+| `ANTHROPIC_API_KEY` | AI review of judgment skills, paraphrase confirmation, summary, coaching and CRM fields. Default model is `claude-opus-5-5` at `high` effort; set `CLAUDE_MODEL=claude-sonnet-5-5` for lower cost per call. |
 | `DEEPGRAM_MIP_OPT_OUT` | Default `true`: every Deepgram request opts out of its model-training program, because calls contain health information. Set `false` only for non-sensitive audio. |
-| `MYCALL_API_TOKEN` | **Required before exposing the server.** Every API call must present it. |
+| `MYCALL_API_TOKEN` | **Required before exposing the server.** Every API call must present it. The Docker image sets `MYCALL_REQUIRE_TOKEN=true`, so it refuses to start without one (pass `-e MYCALL_REQUIRE_TOKEN=false` for a local keyless demo). |
 
 ## Chrome extension (live calls without screen-share prompts)
 
@@ -151,7 +151,7 @@ It exits non-zero if any call fails.
 ## Tests
 
 ```bash
-npm test                          # 45 unit + integration tests (engine, importers, API, live WebSocket with a fake Deepgram)
+npm test                          # unit + integration tests (engine, importers, API, live WebSocket with a fake Deepgram)
 npm run typecheck
 node scripts/e2e-smoke.mjs        # browser walkthrough (needs a running server)
 node scripts/capture-smoke.mjs    # real browser mic → worklet → WebSocket → WAV pipeline with a fake Deepgram

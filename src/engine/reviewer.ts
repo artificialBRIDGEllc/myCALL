@@ -128,6 +128,12 @@ export function buildUserPrompt(input: ReviewInput): string {
 // Claude implementation
 // ---------------------------------------------------------------------------
 
+/** Current Opus. Override with CLAUDE_MODEL (e.g. claude-sonnet-5-5 for lower cost per call). */
+export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
+/** Grading is accuracy-sensitive; Opus 5.5 would otherwise default to "medium". */
+export const DEFAULT_CLAUDE_EFFORT = "high";
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
 export interface ClaudeReviewerOptions {
   apiKey?: string;
   model?: string;
@@ -141,9 +147,9 @@ export class ClaudeReviewer implements AiReviewer {
   private effort: ClaudeReviewerOptions["effort"];
 
   constructor(opts: ClaudeReviewerOptions = {}) {
-    this.name = opts.model ?? "claude-opus-5";
+    this.name = opts.model ?? DEFAULT_CLAUDE_MODEL;
     this.client = opts.client ?? new Anthropic(opts.apiKey ? { apiKey: opts.apiKey } : {});
-    this.effort = opts.effort;
+    this.effort = opts.effort ?? DEFAULT_CLAUDE_EFFORT;
   }
 
   async review(input: ReviewInput): Promise<AiReview> {
@@ -151,7 +157,7 @@ export class ClaudeReviewer implements AiReviewer {
       model: this.name,
       max_tokens: 16000,
       thinking: { type: "adaptive" },
-      ...(this.effort ? { output_config: { effort: this.effort, format: betaZodOutputFormat(AiReviewSchema) } } : { output_config: { format: betaZodOutputFormat(AiReviewSchema) } }),
+      output_config: { effort: this.effort, format: betaZodOutputFormat(AiReviewSchema) },
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       system: [{ type: "text", text: buildSystemPrompt(input.rubric), cache_control: { type: "ephemeral" } }],
@@ -168,6 +174,10 @@ export class ClaudeReviewer implements AiReviewer {
 /** Build the default reviewer from environment variables, or null when no key is configured. */
 export function reviewerFromEnv(env: NodeJS.ProcessEnv = process.env): AiReviewer | null {
   if (!env.ANTHROPIC_API_KEY) return null;
-  const effort = env.CLAUDE_EFFORT as ClaudeReviewerOptions["effort"] | undefined;
-  return new ClaudeReviewer({ apiKey: env.ANTHROPIC_API_KEY, model: env.CLAUDE_MODEL || "claude-opus-5", effort });
+  const raw = env.CLAUDE_EFFORT?.trim();
+  if (raw && !(EFFORTS as readonly string[]).includes(raw)) {
+    throw new Error(`CLAUDE_EFFORT must be one of ${EFFORTS.join(", ")} (got "${raw}").`);
+  }
+  const effort = (raw || undefined) as ClaudeReviewerOptions["effort"];
+  return new ClaudeReviewer({ apiKey: env.ANTHROPIC_API_KEY, model: env.CLAUDE_MODEL || DEFAULT_CLAUDE_MODEL, effort });
 }

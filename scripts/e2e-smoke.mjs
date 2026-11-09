@@ -1,5 +1,7 @@
 import { chromium } from "playwright";
-const SP = process.env.SP;
+import os from "node:os";
+// Screenshot folder. Unset used to write into a literal "undefined/" directory.
+const SP = process.env.SP || os.tmpdir();
 const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" }).catch(() => chromium.launch());
 const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
 const errors = [];

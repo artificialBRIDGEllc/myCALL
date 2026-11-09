@@ -8,7 +8,8 @@ RUN npm run build && npm prune --omit=dev
 
 # ---- run ----
 FROM node:22-slim
-ENV NODE_ENV=production PORT=8787 MYCALL_DATA_DIR=/data
+# Fail closed: an image deployed without MYCALL_API_TOKEN refuses to start instead of serving calls openly.
+ENV NODE_ENV=production PORT=8787 MYCALL_DATA_DIR=/data MYCALL_REQUIRE_TOKEN=true
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
