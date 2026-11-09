@@ -58,6 +58,16 @@ if ! exists gcloud secrets describe mycall-deepgram-key --project "$PROJECT"; th
   while [ -z "$DG" ]; do read -rsp "Paste the Deepgram API key (it stays hidden), then press Enter: " DG; echo; done
   put_secret mycall-deepgram-key "$DG"
 fi
+# Optional: the AI reviewer (Claude). Without it, judgment skills are left for human review.
+if ! exists gcloud secrets describe mycall-anthropic-key --project "$PROJECT"; then
+  AK=${ANTHROPIC_API_KEY:-}
+  if [ -z "$AK" ] && [ -t 0 ]; then
+    echo "Optional: the AI reviewer grades judgment skills and writes summaries and coaching."
+    echo "Only add it once you have a BAA with Anthropic covering these calls."
+    read -rsp "Paste the Anthropic API key (it stays hidden), or press Enter to skip: " AK; echo
+  fi
+  if [ -n "$AK" ]; then put_secret mycall-anthropic-key "$AK"; else echo "Skipping the AI reviewer. Rerun this script to add it later."; fi
+fi
 NEW_PASSWORD=""
 if ! exists gcloud secrets describe mycall-api-token --project "$PROJECT"; then
   NEW_PASSWORD=$(openssl rand -base64 30 | tr -dc 'A-Za-z0-9' | head -c 24)
@@ -70,7 +80,8 @@ exists gcloud iam service-accounts describe "$SA" --project "$PROJECT" ||
 for role in roles/artifactregistry.reader roles/logging.logWriter; do
   gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$SA" --role "$role" --condition=None >/dev/null
 done
-for s in mycall-deepgram-key mycall-api-token; do
+for s in mycall-deepgram-key mycall-api-token mycall-anthropic-key; do
+  exists gcloud secrets describe "$s" --project "$PROJECT" || continue
   gcloud secrets add-iam-policy-binding "$s" --member "serviceAccount:$SA" --role roles/secretmanager.secretAccessor --project "$PROJECT" >/dev/null
 done
 

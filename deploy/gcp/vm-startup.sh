@@ -50,8 +50,14 @@ if [ -z "$DG_KEY" ] || [ -z "$API_TOKEN" ]; then
   echo "Could not read secrets from Secret Manager; not starting myCALL." >&2
   exit 1
 fi
+# Optional AI reviewer key: missing secret means the app runs without it (judgment items go to human review).
+AI_KEY=$(secret mycall-anthropic-key 2>/dev/null || true)
+[ -n "$AI_KEY" ] || echo "No mycall-anthropic-key secret readable; starting without the AI reviewer." >&2
 umask 077
-printf 'DEEPGRAM_API_KEY=%s\nMYCALL_API_TOKEN=%s\nMYCALL_REQUIRE_TOKEN=true\n' "$DG_KEY" "$API_TOKEN" > /etc/mycall/mycall.env.new
+{
+  printf 'DEEPGRAM_API_KEY=%s\nMYCALL_API_TOKEN=%s\nMYCALL_REQUIRE_TOKEN=true\n' "$DG_KEY" "$API_TOKEN"
+  [ -z "$AI_KEY" ] || printf 'ANTHROPIC_API_KEY=%s\n' "$AI_KEY"
+} > /etc/mycall/mycall.env.new
 mv /etc/mycall/mycall.env.new /etc/mycall/mycall.env
 umask 022
 

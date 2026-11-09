@@ -12,7 +12,8 @@ Recordings of Medicare calls are protected health information. Before uploading 
 
 1. **Google Cloud BAA.** Console → *IAM & Admin* → *Privacy & Security* → review and accept the HIPAA Business Associate Agreement. It is free and done online. myCALL only uses services the BAA covers: Compute Engine, Cloud Storage disks and snapshots, Secret Manager, Artifact Registry and Cloud Build.
 2. **Deepgram BAA.** Ask Deepgram for a signed BAA on your account, and confirm your plan includes one. myCALL already opts every request out of Deepgram's model-training program (`mip_opt_out=true`) so audio isn't kept to train models. Deepgram may price opted-out requests differently; check your plan.
-3. **Only give the password to people allowed to hear the calls.**
+3. **Anthropic BAA (only if you turn on the AI reviewer).** The reviewer sees transcripts with Medicare numbers, SSNs, phone numbers, card numbers, emails and dates removed, but the rest of the call is still health information. Get a BAA from Anthropic before adding the key. Without the key, myCALL still grades every phrase rule and leaves judgment skills for a human.
+4. **Only give the password to people allowed to hear the calls.**
 
 ## Steps
 
@@ -28,7 +29,7 @@ Recordings of Medicare calls are protected health information. Before uploading 
    ```
 
    If GitHub asks you to sign in, use a personal access token as the password (GitHub → *Settings* → *Developer settings* → *Tokens*).
-5. When asked, paste the Deepgram API key. It is hidden as you type and goes straight into Google Secret Manager, never into a file or the repo.
+5. When asked, paste the Deepgram API key, then the Anthropic API key (or press Enter to skip the AI reviewer). Both are hidden as you type and go straight into Google Secret Manager, never into a file or the repo. To add the Anthropic key later, rerun the script.
 6. Wait about 5 minutes. The script prints:
 
    ```
@@ -51,8 +52,8 @@ In Cloud Shell: `cd myCALL && git pull && bash deploy/gcp/setup.sh`. It rebuilds
 | `e2-small` VM (Debian 12, Shielded VM), fixed IP | Runs the app. For heavy batches, rerun with `MACHINE=e2-medium bash deploy/gcp/setup.sh`; it resizes the existing server (about a minute offline). |
 | `mycall-data` 50 GB disk, kept if the VM is deleted | Database and recordings. Encrypted at rest by Google. |
 | Nightly snapshot, 14 days kept | Backups. |
-| Secret Manager: `mycall-deepgram-key`, `mycall-api-token` | Keys never live in files or the repo. |
-| Service account `mycall-vm` | Can read only its image and those two secrets. |
+| Secret Manager: `mycall-deepgram-key`, `mycall-api-token`, optional `mycall-anthropic-key` | Keys never live in files or the repo. |
+| Service account `mycall-vm` | Can read only its image and those secrets. |
 | Caddy in front of the app | Automatic HTTPS. Only ports 80/443 are open (plus Google's default SSH rule). |
 
 ## If something goes wrong
