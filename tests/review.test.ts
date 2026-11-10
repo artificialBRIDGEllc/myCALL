@@ -57,6 +57,20 @@ describe("calibrate", () => {
     expect(row("no_pressure")).toMatchObject({ decided: 2, agreed: 2, accuracy: 100 }); // unlocked call's change doesn't count
     expect(row("rapport")).toMatchObject({ decided: 0, resolvedByHuman: 1, accuracy: null });
   });
+
+  it("only counts calls graded with the rubric's current version", async () => {
+    const auto = await scoreCall({ rubric: medicareRubric, transcript: sampleTranscript, reviewer: null });
+    const at = "2026-09-27T00:00:00Z";
+    const old = { ...auto, rubricVersion: "2026.1" };
+    const review: CallReview = { ...emptyReview(medicareRubric.id), locked: true, lockedBy: "Pat", lockedAt: at, overrides: { no_superlatives: { status: "pass", note: "ok", reviewer: "Pat", at } } };
+    const cal = calibrate(medicareRubric, [
+      { auto, review },
+      { auto: old, review },
+      { auto: old, review },
+    ]);
+    expect(cal).toMatchObject({ rubricVersion: medicareRubric.version, lockedCalls: 1, otherVersionCalls: 2 });
+    expect(cal.rows.find((r) => r.criterionId === "no_superlatives")).toMatchObject({ decided: 1, falseAlarms: 1 });
+  });
 });
 
 describe("review API", () => {
@@ -173,9 +187,16 @@ describe("review API", () => {
     for (let i = 0; i < 100 && after.status === "processing"; i++) after = (await new Promise((r) => setTimeout(r, 20)), await call(id));
     expect(after.review?.overrides.no_pressure?.status).toBe("pass");
 
-    // New version: it is cleared and the clearing is logged.
+    // A newer version exists, but a plain rescore stays on the graded version: the decision survives.
     expect((await send("POST", "/api/rubrics", { ...v1, version: "2", criteria: v1.criteria.map((c) => (c.id === "no_pressure" ? { ...c, severity: "critical" as const } : c)) })).status).toBe(201);
     await send("POST", `/api/calls/${id}/rescore`, {});
+    after = await call(id);
+    for (let i = 0; i < 100 && after.status === "processing"; i++) after = (await new Promise((r) => setTimeout(r, 20)), await call(id));
+    expect(after.result?.rubricVersion).toBe("1");
+    expect(after.review?.overrides.no_pressure?.status).toBe("pass");
+
+    // Explicitly moving to the new version clears it, and the clearing is logged.
+    await send("POST", `/api/calls/${id}/rescore`, { latest: true });
     after = await call(id);
     for (let i = 0; i < 100 && after.status === "processing"; i++) after = (await new Promise((r) => setTimeout(r, 20)), await call(id));
     expect(after.review).toBeNull();

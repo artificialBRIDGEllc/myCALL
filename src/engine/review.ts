@@ -67,7 +67,9 @@ const PASSING = new Set<CriterionStatus>(["pass", "na"]);
  * they didn't change, so an un-overridden grade counts as agreement.
  */
 export function calibrate(rubric: Rubric, calls: Array<{ auto: ScoreResult; review: CallReview }>): Calibration {
-  const locked = calls.filter((c) => c.review.locked && c.review.rubricId === rubric.id && c.auto.rubricId === rubric.id);
+  const signedOff = calls.filter((c) => c.review.locked && c.review.rubricId === rubric.id && c.auto.rubricId === rubric.id);
+  // A new version can change what an item checks, so only calls graded with this exact version count.
+  const locked = signedOff.filter((c) => c.auto.rubricVersion === rubric.version);
   const rows: CalibrationRow[] = rubric.criteria.map((crit) => {
     const row: CalibrationRow = {
       criterionId: crit.id,
@@ -99,5 +101,5 @@ export function calibrate(rubric: Rubric, calls: Array<{ auto: ScoreResult; revi
     row.accuracy = row.decided ? Math.round((row.agreed / row.decided) * 1000) / 10 : null;
     return row;
   });
-  return { rubricId: rubric.id, lockedCalls: locked.length, rows };
+  return { rubricId: rubric.id, rubricVersion: rubric.version, lockedCalls: locked.length, otherVersionCalls: signedOff.length - locked.length, rows };
 }

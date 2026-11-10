@@ -85,7 +85,7 @@ export function CallView({ id }: { id: string }) {
 
   const r = call.result;
 
-  const rescore = async (body: { rubricId?: string; swapRoles?: boolean }) => {
+  const rescore = async (body: { rubricId?: string; swapRoles?: boolean; latest?: boolean }) => {
     try {
       await api.rescore(call.id, body);
       setCall({ ...call, status: "processing" });
@@ -293,10 +293,14 @@ function nameOf(rubric: Rubric | undefined, id: string) {
   return rubric?.criteria.find((c) => c.id === id)?.name ?? id;
 }
 
-function Actions({ call, rubrics, onRescore }: { call: CallDetail; rubrics: Rubric[]; onRescore: (b: { rubricId?: string; swapRoles?: boolean }) => void }) {
+function Actions({ call, rubrics, onRescore }: { call: CallDetail; rubrics: Rubric[]; onRescore: (b: { rubricId?: string; swapRoles?: boolean; latest?: boolean }) => void }) {
   const [rubricId, setRubricId] = useState(call.rubricId);
   const locked = Boolean(call.review?.locked);
   const busy = call.status === "processing" || locked;
+  // Rescore keeps the version the call was graded with; offer the newer version explicitly.
+  const gradedVersion = call.result?.rubricId === rubricId ? call.result.rubricVersion : null;
+  const currentVersion = rubrics.find((r) => r.id === rubricId)?.version ?? null;
+  const newerAvailable = Boolean(gradedVersion && currentVersion && gradedVersion !== currentVersion);
   return (
     <div className="no-print flex flex-wrap items-center gap-2">
       <select className="input w-auto" value={rubricId} onChange={(e) => setRubricId(e.target.value)} aria-label="Rubric">
@@ -306,9 +310,21 @@ function Actions({ call, rubrics, onRescore }: { call: CallDetail; rubrics: Rubr
           </option>
         ))}
       </select>
-      <button className="btn-ghost" disabled={busy} onClick={() => onRescore({ rubricId })}>
+      <button className="btn-ghost" disabled={busy} title={gradedVersion ? `Rescore with v${gradedVersion}, the version this call was graded with` : undefined} onClick={() => onRescore({ rubricId })}>
         Rescore
       </button>
+      {newerAvailable && (
+        <button
+          className="btn-ghost"
+          disabled={busy}
+          title={`Grade this call with v${currentVersion} instead of v${gradedVersion}. Review decisions made against v${gradedVersion} are cleared and logged.`}
+          onClick={() => {
+            if (window.confirm(`Rescore with v${currentVersion}? Review decisions made against v${gradedVersion} will be cleared (the audit log keeps a record).`)) onRescore({ rubricId, latest: true });
+          }}
+        >
+          Rescore with v{currentVersion}
+        </button>
+      )}
       {call.transcript && (
         <button className="btn-ghost" disabled={busy} title="Use if the agent and customer were detected the wrong way round" onClick={() => onRescore({ rubricId, swapRoles: true })}>
           Swap speakers

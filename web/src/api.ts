@@ -81,8 +81,8 @@ export const api = {
   upload: (form: FormData) => request<{ id: string }>("/api/calls", { method: "POST", body: form }),
   importText: (body: { transcript: string; rubricId: string; title?: string; agentName?: string; filename?: string }) =>
     request<{ id: string }>("/api/calls", { method: "POST", body: JSON.stringify(body) }),
-  rescore: (id: string, body: { rubricId?: string; swapRoles?: boolean }) =>
-    request<{ id: string }>(`/api/calls/${id}/rescore`, { method: "POST", body: JSON.stringify(body) }),
+  rescore: (id: string, body: { rubricId?: string; swapRoles?: boolean; latest?: boolean }) =>
+    request<{ id: string; rubricVersion: string }>(`/api/calls/${id}/rescore`, { method: "POST", body: JSON.stringify(body) }),
   remove: (id: string) => request<void>(`/api/calls/${id}`, { method: "DELETE" }),
   review: (id: string, criterionId: string, body: { status: ReviewedStatus; fraction?: number; note: string; reviewer: string }) =>
     request<CallDetail>(`/api/calls/${id}/review/${encodeURIComponent(criterionId)}`, { method: "PUT", body: JSON.stringify(body) }),

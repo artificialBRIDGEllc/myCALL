@@ -64,6 +64,12 @@ export function CalibrationPage() {
         </select>
       </div>
       {error && <ErrorBox message={error} />}
+      {data && data.otherVersionCalls > 0 && (
+        <p className="text-sm text-slate-500">
+          Showing calls graded with v{data.rubricVersion} only. {data.otherVersionCalls} signed-off call{data.otherVersionCalls > 1 ? "s" : ""} graded with older
+          versions {data.otherVersionCalls > 1 ? "aren't" : "isn't"} counted, because an item can mean something different in another version.
+        </p>
+      )}
       {!data ? (
         !error && (
           <div className="flex items-center gap-2 text-slate-500">

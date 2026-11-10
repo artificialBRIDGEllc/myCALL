@@ -236,6 +236,17 @@ describe("API", () => {
 
     const packet = (await (await fetch(`${base}/api/calls/${call.id}/export`, { headers: auth })).json()) as { rubric: { version: string } };
     expect(packet.rubric.version).toBe("1");
+
+    // Rescore keeps the graded version by default...
+    const rescore = (body: object) => fetch(`${base}/api/calls/${call.id}/rescore`, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const kept = await rescore({});
+    expect(kept.status).toBe(202);
+    expect(((await kept.json()) as { rubricVersion: string }).rubricVersion).toBe("1");
+    expect((await waitScored(call.id)).result!.rubricVersion).toBe("1");
+    // ...and only moves to the current version when asked.
+    const latest = await rescore({ latest: true });
+    expect(((await latest.json()) as { rubricVersion: string }).rubricVersion).toBe("2");
+    expect((await waitScored(call.id)).result!.rubricVersion).toBe("2");
   });
 });
 
