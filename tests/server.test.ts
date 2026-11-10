@@ -203,6 +203,40 @@ describe("API", () => {
     const list = (await (await fetch(`${base}/api/rubrics`, { headers: auth })).json()) as Array<{ id: string }>;
     expect(list.map((r) => r.id)).toContain("acme-intro");
   });
+
+  it("keeps showing and exporting a call against the rubric version it was graded with", async () => {
+    const v1 = {
+      id: "acme-versioned",
+      name: "Acme versioned",
+      version: "1",
+      description: "",
+      passThreshold: 70,
+      sections: [{ id: "s", name: "S" }],
+      criteria: [{ id: "hello", sectionId: "s", name: "Says hello", description: "Greets", points: 5, severity: "minor", kind: "required", evaluator: "rules", patterns: ["hello"] }],
+    };
+    const post = (r: object) => fetch(`${base}/api/rubrics`, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify(r) });
+    expect((await post(v1)).status).toBe(201);
+    const res = await fetch(`${base}/api/calls`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ transcript: "Agent: Hello there.\nCustomer: Hi.", rubricId: "acme-versioned" }),
+    });
+    const call = await waitScored(((await res.json()) as { id: string }).id);
+    expect(call.result!.rubricVersion).toBe("1");
+
+    // A newer version changes what the item is called; the old call must still use v1.
+    expect((await post({ ...v1, version: "2", criteria: [{ ...v1.criteria[0], name: "Greets warmly" }] })).status).toBe(201);
+    const current = (await (await fetch(`${base}/api/rubrics/acme-versioned`, { headers: auth })).json()) as { version: string };
+    expect(current.version).toBe("2");
+
+    const graded = await fetch(`${base}/api/rubrics/acme-versioned/versions/1`, { headers: auth });
+    expect(graded.status).toBe(200);
+    expect(((await graded.json()) as { criteria: Array<{ name: string }> }).criteria[0]!.name).toBe("Says hello");
+    expect((await fetch(`${base}/api/rubrics/acme-versioned/versions/9`, { headers: auth })).status).toBe(404);
+
+    const packet = (await (await fetch(`${base}/api/calls/${call.id}/export`, { headers: auth })).json()) as { rubric: { version: string } };
+    expect(packet.rubric.version).toBe("1");
+  });
 });
 
 async function signed(path: string): Promise<string> {

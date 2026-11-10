@@ -66,7 +66,7 @@ export const medicareRubric: Rubric = {
         },
       ],
       guidance:
-        "Pass only if all three elements are conveyed in substance within the first 60 seconds. A paraphrase is acceptable only if it is materially equivalent. Cite the utterances.",
+        "Pass only if all three elements are conveyed in substance within the first 60 seconds. A paraphrase is acceptable only if it is materially equivalent. For the third element the agent must name Medicare.gov or 1-800-MEDICARE: a referral only to a State Health Insurance Program (SHIP) is not equivalent under the CY2027 text and does not satisfy it. Cite the utterances.",
       liveHint: "Read the TPMO disclaimer now: not every plan · # of organizations/plans · Medicare.gov / 1-800-MEDICARE.",
     },
     {

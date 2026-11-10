@@ -31,7 +31,23 @@ export function CallView({ id }: { id: string }) {
     api.signedUrl(`/api/calls/${call.id}/audio`).then(setAudioSrc).catch(() => setAudioSrc(null));
   }, [call?.id, call?.hasAudio]);
 
-  const rubric = rubrics.find((r) => r.id === call?.rubricId);
+  // Show the call against the rubric version it was graded with; fall back to the current one.
+  const gradedId = call?.result?.rubricId;
+  const gradedVersion = call?.result?.rubricVersion;
+  const [gradedRubric, setGradedRubric] = useState<Rubric | null>(null);
+  useEffect(() => {
+    setGradedRubric(null);
+    if (!gradedId || !gradedVersion) return;
+    let live = true;
+    api
+      .rubricVersion(gradedId, gradedVersion)
+      .then((r) => live && setGradedRubric(r))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [gradedId, gradedVersion]);
+  const rubric = gradedRubric ?? rubrics.find((r) => r.id === call?.rubricId);
   const utterances = call?.transcript?.utterances ?? [];
   const byId = useMemo(() => new Map(utterances.map((u) => [u.id, u])), [utterances]);
 
