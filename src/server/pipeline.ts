@@ -135,29 +135,32 @@ export class Pipeline {
    * different rubric. Returns the final (reviewed) result.
    */
   saveScored(callId: string, rubric: Rubric, auto: ScoreResult): ScoreResult {
-    const previous = this.store.getCall(callId);
-    let review = previous?.review ?? null;
-    // Decisions only carry over to the same rubric *version*: a new version may change what an item means.
-    const sameVersion = review?.rubricId === rubric.id && (!previous?.autoResult || previous.autoResult.rubricVersion === auto.rubricVersion);
-    if (review && !sameVersion) {
-      const dropped = Object.keys(review.overrides).length;
-      if (dropped) {
-        this.store.addReviewEvent({
-          callId,
-          action: "revert",
-          criterionId: null,
-          fromStatus: null,
-          toStatus: null,
-          reviewer: "system",
-          note: `Rescored with rubric "${rubric.id}" v${auto.rubricVersion}; ${dropped} review decision(s) made against "${review.rubricId}"${previous?.autoResult ? ` v${previous.autoResult.rubricVersion}` : ""} were cleared.`,
-          at: new Date().toISOString(),
-        });
+    // Read, log and save in one transaction: the append-only log must never record cleared
+    // decisions that the call itself still carries (or miss ones it no longer does).
+    return this.store.transaction(() => {
+      const previous = this.store.getCall(callId);
+      let review = previous?.review ?? null;
+      // Decisions only carry over to the same rubric *version*: a new version may change what an item means.
+      const sameVersion = review?.rubricId === rubric.id && (!previous?.autoResult || previous.autoResult.rubricVersion === auto.rubricVersion);
+      if (review && !sameVersion) {
+        const dropped = Object.keys(review.overrides).length;
+        if (dropped) {
+          this.log(
+            callId,
+            "revert",
+            null,
+            null,
+            null,
+            "system",
+            `Rescored with rubric "${rubric.id}" v${auto.rubricVersion}; ${dropped} review decision(s) made against "${review.rubricId}"${previous?.autoResult ? ` v${previous.autoResult.rubricVersion}` : ""} were cleared.`,
+          );
+        }
+        review = null;
       }
-      review = null;
-    }
-    const final = applyReview(rubric, auto, review);
-    this.store.saveResult(callId, auto, review, summaryOf(final, review));
-    return final;
+      const final = applyReview(rubric, auto, review);
+      this.store.saveResult(callId, auto, review, summaryOf(final, review));
+      return final;
+    });
   }
 
   /** Everything the call page needs, with human overrides applied to the result. */
@@ -193,8 +196,7 @@ export class Pipeline {
     };
     const before = review.overrides[criterionId]?.status ?? criterion.status;
     review.overrides[criterionId] = override;
-    this.log(callId, "override", criterionId, before, override.status, reviewer, note);
-    return this.commitReview(call, rubric, auto, review);
+    return this.commitReview(call, rubric, auto, review, () => this.log(callId, "override", criterionId, before, override.status, reviewer, note));
   }
 
   clearOverride(callId: string, criterionId: string, reviewer: string, note: string): CallDetail {
@@ -203,8 +205,9 @@ export class Pipeline {
     if (!prior) throw new ReviewError(404, "There's no review decision on that item to undo.");
     if (!reviewer.trim()) throw new ReviewError(400, "Add your name so the change is attributed.");
     delete review.overrides[criterionId];
-    this.log(callId, "revert", criterionId, null, null, reviewer.trim(), note.trim() || `Undid "${prior.status}" by ${prior.reviewer}; back to the automatic grade.`);
-    return this.commitReview(call, rubric, auto, review);
+    return this.commitReview(call, rubric, auto, review, () =>
+      this.log(callId, "revert", criterionId, null, null, reviewer.trim(), note.trim() || `Undid "${prior.status}" by ${prior.reviewer}; back to the automatic grade.`),
+    );
   }
 
   /** Sign off: only once nothing is left waiting for a person. Locked calls can't be edited or rescored. */
@@ -218,8 +221,8 @@ export class Pipeline {
     review.locked = true;
     review.lockedBy = reviewer.trim();
     review.lockedAt = new Date().toISOString();
-    this.log(callId, "lock", null, null, null, review.lockedBy, note.trim() || "Signed off.");
-    return this.commitReview(call, rubric, auto, review);
+    const lockedBy = review.lockedBy;
+    return this.commitReview(call, rubric, auto, review, () => this.log(callId, "lock", null, null, null, lockedBy, note.trim() || "Signed off."));
   }
 
   /** Reopen a signed-off call. A reason is required and recorded in the audit log. */
@@ -231,8 +234,7 @@ export class Pipeline {
     const rubric = call.autoResult ? this.rubricFor(call.autoResult) : undefined;
     if (!rubric || !call.autoResult) throw new ReviewError(409, "The rubric version this call was graded with is no longer available.");
     const review: CallReview = { ...call.review, locked: false, lockedBy: null, lockedAt: null };
-    this.log(callId, "unlock", null, null, null, reviewer.trim(), note.trim());
-    return this.commitReview(call, rubric, call.autoResult, review);
+    return this.commitReview(call, rubric, call.autoResult, review, () => this.log(callId, "unlock", null, null, null, reviewer.trim(), note.trim()));
   }
 
   isLocked(callId: string): boolean {
@@ -255,9 +257,13 @@ export class Pipeline {
     return { call, rubric, auto: call.autoResult, review };
   }
 
-  private commitReview(call: StoredCall, rubric: Rubric, auto: ScoreResult, review: CallReview): CallDetail {
+  /** Log the review event and save the review together, so the audit trail and the grade can't disagree. */
+  private commitReview(call: StoredCall, rubric: Rubric, auto: ScoreResult, review: CallReview, logEvent: () => void): CallDetail {
     const final = applyReview(rubric, auto, review);
-    this.store.saveReview(call.id, review, summaryOf(final, review));
+    this.store.transaction(() => {
+      logEvent();
+      this.store.saveReview(call.id, review, summaryOf(final, review));
+    });
     return this.detail(call.id)!;
   }
 
