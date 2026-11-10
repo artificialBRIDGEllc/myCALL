@@ -45,7 +45,11 @@ export function LivePage({ config }: { config: ServerConfig | null }) {
     };
   }, []);
 
-  useEffect(() => transcriptEnd.current?.scrollIntoView({ block: "nearest" }), [utterances.length, interim]);
+  // Block body on purpose: newer browsers return a Promise from scrollIntoView, and React
+  // would call any returned value as the effect's cleanup and crash the page.
+  useEffect(() => {
+    transcriptEnd.current?.scrollIntoView({ block: "nearest" });
+  }, [utterances.length, interim]);
 
   useEffect(() => {
     if (phase !== "live" || !capture.current) return;
