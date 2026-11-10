@@ -56,11 +56,11 @@ describe("results spreadsheet", () => {
   });
 
   it("names the missing parts of a partly-read disclosure instead of quoting the part that was said", () => {
-    const rubrics = [rubric("a", "S", [["tpmo", "TPMO disclaimer"]], "1", [["not_every", "Not every plan"], ["count", "How many plans"], ["ship", "Medicare.gov / SHIP"]])];
+    const rubrics = [rubric("a", "S", [["tpmo", "TPMO disclaimer"]], "1", [["not_every", "Not every plan"], ["count", "How many plans"], ["all_options", "Medicare.gov / 1-800-MEDICARE"]])];
     const said = { utteranceId: 1, start: 5, end: 6, role: "agent", quote: "we do not offer every plan" };
     const partial = crit("tpmo", "partial", { evidence: [said] as never, componentsFound: ["not_every"] });
     const [, row] = parse(callsCsv([call("t", "a", [partial])], rubrics));
-    expect(row).toContain("TPMO disclaimer: missing How many plans / Medicare.gov / SHIP");
+    expect(row).toContain("TPMO disclaimer: missing How many plans / Medicare.gov / 1-800-MEDICARE");
     expect(row).not.toContain("we do not offer every plan");
   });
 

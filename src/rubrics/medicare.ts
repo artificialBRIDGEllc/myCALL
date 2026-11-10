@@ -14,7 +14,7 @@ import type { Rubric } from "../core/types.js";
 export const medicareRubric: Rubric = {
   id: "medicare-tpmo",
   name: "Medicare sales call — CMS/TPMO compliance + quality",
-  version: "2026.1",
+  version: "2027.1",
   description:
     "Scores Medicare Advantage / Part D sales calls against CMS marketing rules (TPMO disclaimer, scope of appointment, prohibited conduct) and sales-quality skills (needs analysis, plan fit, informed enrollment).",
   passThreshold: 80,
@@ -32,8 +32,8 @@ export const medicareRubric: Rubric = {
       sectionId: "disclosures",
       name: "TPMO disclaimer within the first minute",
       description:
-        "Agent reads the standardized TPMO disclaimer within the first minute of the sales call: we do not offer every plan in your area; how many organizations/plans we represent; contact Medicare.gov, 1-800-MEDICARE, or your local SHIP for all options.",
-      citation: "42 CFR 422.2267(e)(41) and 423.2267(e)(41)",
+        "Agent reads the standardized TPMO disclaimer within the first minute of the sales call: we do not offer every plan in your area; how many organizations/plans we represent; contact Medicare.gov or 1-800-MEDICARE for all options. CMS removed the SHIP referral from the standardized text for CY2027 marketing (91 FR 17583, effective 10/1/2026), so mentioning SHIP no longer satisfies this element.",
+      citation: "42 CFR 422.2267(e)(41) and 423.2267(e)(41); 91 FR 17583 (CY2027)",
       points: 15,
       severity: "critical",
       kind: "required",
@@ -56,20 +56,18 @@ export const medicareRubric: Rubric = {
         },
         {
           id: "all_options",
-          label: "Medicare.gov, 1-800-MEDICARE or local SHIP",
+          label: "Medicare.gov or 1-800-MEDICARE",
           patterns: [
             "medicare (dot )?gov",
             "(1 )?800 medicare",
             "1800 medicare",
             "one (eight hundred|800) medicare",
-            "state health insurance( assistance)? program",
-            "local ship",
           ],
         },
       ],
       guidance:
         "Pass only if all three elements are conveyed in substance within the first 60 seconds. A paraphrase is acceptable only if it is materially equivalent. Cite the utterances.",
-      liveHint: "Read the TPMO disclaimer now: not every plan · # of organizations/plans · Medicare.gov / 1-800-MEDICARE / SHIP.",
+      liveHint: "Read the TPMO disclaimer now: not every plan · # of organizations/plans · Medicare.gov / 1-800-MEDICARE.",
     },
     {
       id: "recording_notice",

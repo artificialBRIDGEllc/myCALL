@@ -11,7 +11,7 @@ const lines: Array<[number, "agent" | "customer", string]> = [
   [6.0, "agent", "Before we get started, this call is being recorded for quality and compliance purposes."],
   [11.5, "customer", "Okay, that's fine."],
   [13.0, "agent", "We do not offer every plan available in your area. Currently we represent 7 organizations which offer 42 products in your area."],
-  [21.5, "agent", "Please contact Medicare.gov, 1-800-MEDICARE, or your local State Health Insurance Program to get information on all of your options."],
+  [21.5, "agent", "Please contact Medicare.gov or 1-800-MEDICARE to get information on all of your options."],
   [30.5, "customer", "Sure. I got a letter saying my plan is changing next year and I'm worried about my costs."],
   [36.0, "agent", "I understand, that's a really common concern this time of year. Before we look at plans, I need to confirm the scope of appointment."],
   [43.0, "agent", "Is it okay if we discuss Medicare Advantage and Part D prescription drug plans today?"],
