@@ -73,6 +73,7 @@ export interface ServerConfig {
 export const api = {
   config: () => request<ServerConfig>("/api/config"),
   rubrics: () => request<Rubric[]>("/api/rubrics"),
+  rubricVersion: (id: string, version: string) => request<Rubric>(`/api/rubrics/${encodeURIComponent(id)}/versions/${encodeURIComponent(version)}`),
   saveRubric: (r: unknown) => request<Rubric>("/api/rubrics", { method: "POST", body: JSON.stringify(r) }),
   deleteRubric: (id: string) => request<void>(`/api/rubrics/${encodeURIComponent(id)}`, { method: "DELETE" }),
   calls: () => request<CallRecord[]>("/api/calls"),

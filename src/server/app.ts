@@ -126,6 +126,10 @@ export async function buildApp(config: AppConfig): Promise<App> {
   // ---- Rubrics ----
   app.get("/api/rubrics", async () => pipeline.rubrics());
   app.get<{ Params: { id: string } }>("/api/rubrics/:id", async (req, reply) => pipeline.rubric(req.params.id) ?? reply.code(404).send({ error: "Rubric not found" }));
+  // The exact version a call was graded with, so old calls are shown and exported against their own rules.
+  app.get<{ Params: { id: string; version: string } }>("/api/rubrics/:id/versions/:version", async (req, reply) =>
+    pipeline.rubricVersion(req.params.id, req.params.version) ?? reply.code(404).send({ error: "Rubric version not found" }),
+  );
   app.post("/api/rubrics", async (req, reply) => {
     try {
       const rubric = parseRubric(req.body);
@@ -318,7 +322,8 @@ export async function buildApp(config: AppConfig): Promise<App> {
     const call = pipeline.detail(req.params.id);
     if (!call?.result) return reply.code(404).send({ error: "No scored result for this call" });
     const automatic = store.getCall(call.id)?.autoResult ?? null;
-    const rubric = pipeline.rubric(call.result.rubricId);
+    // The rubric version this call was graded with (not today's), so the packet shows the rules actually applied.
+    const rubric = pipeline.rubricVersion(call.result.rubricId, call.result.rubricVersion) ?? null;
     // Final result, the untouched automatic result, and the full review audit trail.
     const body = { exportedAt: new Date().toISOString(), call, automaticResult: automatic, rubric };
     const json = JSON.stringify(body, null, 2);

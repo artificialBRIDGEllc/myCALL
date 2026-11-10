@@ -40,6 +40,24 @@ describe("rule engine", () => {
     expect(f.componentsFound.sort()).toEqual(["all_options", "not_every_plan", "represent_count"]);
   });
 
+  it("no longer credits a SHIP referral for the all-options element (CY2027 text)", () => {
+    const t = tx([
+      u(0, 5, "agent", "We do not offer every plan available in your area. We represent five organizations which offer 30 products in your area."),
+      u(1, 12, "agent", "Please contact your local State Health Insurance Program for all your options."),
+    ]);
+    const f = finding(t, "tpmo_disclaimer");
+    expect(f.satisfied).toBe(false);
+    expect(f.componentsFound).not.toContain("all_options");
+  });
+
+  it("still passes when the agent mentions SHIP in addition to Medicare.gov", () => {
+    const t = tx([
+      u(0, 5, "agent", "We do not offer every plan available in your area. We represent five organizations which offer 30 products in your area."),
+      u(1, 12, "agent", "Please contact Medicare.gov, 1-800-MEDICARE, or your local SHIP for all your options."),
+    ]);
+    expect(finding(t, "tpmo_disclaimer").satisfied).toBe(true);
+  });
+
   it("fails a TPMO disclaimer read after the first minute", () => {
     const t = tx([
       u(0, 90, "agent", "We don't offer every plan in your area. We represent 3 carriers. Call Medicare.gov for all options."),
