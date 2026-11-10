@@ -307,7 +307,11 @@ export interface CalibrationRow {
 
 export interface Calibration {
   rubricId: string;
+  /** Only signed-off calls graded with this exact version are counted. */
+  rubricVersion: string;
   lockedCalls: number;
+  /** Signed-off calls graded with other versions of this rubric (not counted). */
+  otherVersionCalls: number;
   rows: CalibrationRow[];
 }
 

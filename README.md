@@ -75,7 +75,7 @@ Automatic grading is a first pass. People make the final call, and their decisio
 2. **Override anything.** Every automatic grade has an "Override" option. The original grade stays visible next to the human one, and the score and compliance gate are recalculated.
 3. **Sign off & lock.** This is only possible once nothing is left open. A locked call can't be edited, rescored or deleted. Reopening it requires a reason.
 4. **Audit trail.** Every decision, sign-off and reopen is logged with who, when and why. The log is append-only at the database level, and it's included in the evidence export alongside the untouched automatic result.
-5. **Calibration** (`/#/calibration`). For each criterion, it shows how often reviewers agreed with the automatic grade on signed-off calls, plus false alarms (flagged, but a reviewer cleared it) and misses (passed, but a reviewer failed it). It also suggests what to tune. Use it to tighten phrase patterns until the automatic grade can be trusted.
+5. **Calibration** (`/#/calibration`). For each criterion, it shows how often reviewers agreed with the automatic grade on signed-off calls, plus false alarms (flagged, but a reviewer cleared it) and misses (passed, but a reviewer failed it). It also suggests what to tune. Use it to tighten phrase patterns until the automatic grade can be trusted. It only counts calls graded with the rubric's current version, because a new version can change what an item checks.
 
 Reviewer names are entered on the page and remembered per browser. There are no user accounts yet, so names aren't verified. Put SSO in front of the app if attribution must be authenticated.
 
@@ -140,12 +140,13 @@ It exits non-zero if any call fails.
 |---|---|
 | `POST /api/calls` | Multipart `file` + `rubricId` (+ `title`, `agentName`, `separateChannels`), or JSON `{transcript, rubricId}`. Returns `{id}`. Processing happens in the background. |
 | `GET /api/calls`, `GET /api/calls/:id` | List calls, or get one call's detail (transcript + result). |
-| `POST /api/calls/:id/rescore` | `{rubricId?, swapRoles?}` |
+| `POST /api/calls/:id/rescore` | `{rubricId?, swapRoles?, latest?}`. Keeps the rubric version the call was graded with; `latest: true` (or a different `rubricId`) uses the current version and clears review decisions made against the old one. |
 | `POST /api/sign` | `{path}` returns a short-lived signed URL for audio, export or the live WebSocket (places that can't send an Authorization header). The token itself never goes in a URL. |
 | `GET /api/calls.csv` | Every call as a spreadsheet: one row per call, one column per checklist item, with the quotes behind each problem (the **Download results** button). |
 | `GET /api/calls/:id/audio` | Recording (supports seeking). |
 | `GET /api/calls/:id/export` | Evidence packet (JSON) with an `X-Content-SHA256` header. |
 | `GET/POST/DELETE /api/rubrics` | Custom rubrics (validated). |
+| `GET /api/rubrics/:id/versions/:version` | The exact rubric version a call was graded with. |
 | `WS /api/live` | Live calls. Send `{type:"start",…}`, then 16-bit PCM stereo at 16 kHz (ch0 = agent mic, ch1 = call), then `{type:"stop"}`. The server streams back `utterance` / `alert` / `checklist` / `final` messages. |
 
 ## Tests

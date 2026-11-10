@@ -37,7 +37,9 @@ const OverrideBody = z.object({
 });
 const SignBody = z.object({ reviewer: z.string().max(120), note: z.string().max(2000).optional() });
 
-const RescoreBody = z.object({ rubricId: z.string().max(64).optional(), swapRoles: z.boolean().optional() });
+// Rescoring keeps the rubric version the call was graded with; `latest: true` (or picking a
+// different rubric) applies the current version instead.
+const RescoreBody = z.object({ rubricId: z.string().max(64).optional(), swapRoles: z.boolean().optional(), latest: z.boolean().optional() });
 
 export interface App {
   app: FastifyInstance;
@@ -296,10 +298,13 @@ export async function buildApp(config: AppConfig): Promise<App> {
     if (!call) return reply.code(404).send({ error: "Call not found" });
     if (call.status === "processing") return reply.code(409).send({ error: "This call is still being processed." });
     if (call.review?.locked) return reply.code(409).send({ error: "This call is signed off. Reopen it before rescoring." });
-    const rubric = pipeline.rubric(body.data.rubricId ?? call.rubricId);
+    const graded = call.autoResult;
+    const rubricId = body.data.rubricId ?? graded?.rubricId ?? call.rubricId;
+    const keepGraded = !body.data.latest && graded?.rubricId === rubricId;
+    const rubric = (keepGraded ? pipeline.rubricVersion(rubricId, graded.rubricVersion) : undefined) ?? pipeline.rubric(rubricId);
     if (!rubric) return reply.code(400).send({ error: "Unknown rubric" });
     pipeline.rescore(call.id, rubric, Boolean(body.data.swapRoles));
-    return reply.code(202).send({ id: call.id });
+    return reply.code(202).send({ id: call.id, rubricVersion: rubric.version });
   });
 
   app.delete<{ Params: { id: string } }>("/api/calls/:id", async (req, reply) => {
