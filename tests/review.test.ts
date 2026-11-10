@@ -2,11 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { CallDetail, Calibration, CallReview, Rubric } from "../src/core/types.js";
 import { applyReview, calibrate, emptyReview } from "../src/engine/review.js";
 import { scoreCall } from "../src/engine/score.js";
-import { medicareRubric } from "../src/rubrics/index.js";
+import { builtInRubrics, medicareRubric } from "../src/rubrics/index.js";
 import { sampleTranscript } from "../src/rubrics/sample-call.js";
 import { buildApp, type App } from "../src/server/app.js";
 import { Store } from "../src/server/db.js";
@@ -282,6 +282,81 @@ describe("review API", () => {
     expect(() => db.exec("UPDATE review_events SET reviewer = 'someone else'")).toThrow(/append-only/);
     expect(() => db.exec("DELETE FROM review_events")).toThrow(/append-only/);
     db.close();
+  });
+});
+
+describe("atomic audit writes", () => {
+  let dir: string;
+  let store: Store;
+  let pipeline: Pipeline;
+  const callId = "atomic-call";
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "mycall-atomic-"));
+    store = new Store(dir);
+    pipeline = new Pipeline(store, { reviewer: null, deepgram: null } as never);
+    store.createCall({ id: callId, title: "Atomic", agentName: null, source: "import", rubricId: medicareRubric.id });
+    pipeline.saveScored(callId, medicareRubric, await scoreCall({ rubric: medicareRubric, transcript: sampleTranscript, reviewer: null }));
+    pipeline.setOverride(callId, "no_pressure", { status: "pass", note: "Fair warning, not a scare tactic.", reviewer: "Pat" });
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("writes no revert event and keeps the old review when saving a cross-version rescore fails", async () => {
+    const other = builtInRubrics.find((r) => r.id !== medicareRubric.id)!;
+    const auto = await scoreCall({ rubric: other, transcript: sampleTranscript, reviewer: null });
+    const reviewBefore = store.getCall(callId)!.review;
+    const logBefore = store.reviewLog(callId);
+    expect(reviewBefore?.overrides.no_pressure?.status).toBe("pass");
+
+    const spy = vi.spyOn(store, "saveResult").mockImplementationOnce(() => {
+      throw new Error("disk I/O error");
+    });
+    expect(() => pipeline.saveScored(callId, other, auto)).toThrow(/disk I\/O error/);
+    expect(spy).toHaveBeenCalledOnce();
+
+    expect(store.reviewLog(callId)).toEqual(logBefore);
+    expect(store.reviewLog(callId).some((e) => e.action === "revert")).toBe(false);
+    expect(store.getCall(callId)!.review).toEqual(reviewBefore);
+    expect(store.getCall(callId)!.autoResult!.rubricId).toBe(medicareRubric.id);
+
+    // Once the database recovers, the same rescore commits both writes together.
+    pipeline.saveScored(callId, other, auto);
+    expect(store.getCall(callId)!.review).toBeNull();
+    expect(store.reviewLog(callId).at(-1)).toMatchObject({ reviewer: "system", action: "revert" });
+  });
+
+  it("writes no review event when saving a review decision fails", async () => {
+    pipeline.saveScored(callId, medicareRubric, await scoreCall({ rubric: medicareRubric, transcript: sampleTranscript, reviewer: null }));
+    const logBefore = store.reviewLog(callId);
+    const reviewBefore = store.getCall(callId)!.review;
+    vi.spyOn(store, "saveReview").mockImplementationOnce(() => {
+      throw new Error("disk I/O error");
+    });
+    expect(() => pipeline.setOverride(callId, "rapport", { status: "fail", note: "Cold throughout.", reviewer: "Pat" })).toThrow(/disk I\/O error/);
+    expect(store.reviewLog(callId)).toEqual(logBefore);
+    expect(store.getCall(callId)!.review).toEqual(reviewBefore);
+  });
+
+  it("rolls back only the inner writes of a nested transaction the caller recovers from", () => {
+    const logBefore = store.reviewLog(callId).length;
+    const event = { callId, action: "override" as const, criterionId: null, fromStatus: null, toStatus: null, reviewer: "t", note: "n", at: "2026-11-10T00:00:00Z" };
+    store.transaction(() => {
+      store.addReviewEvent(event);
+      expect(() =>
+        store.transaction(() => {
+          store.addReviewEvent(event);
+          throw new Error("inner");
+        }),
+      ).toThrow("inner");
+    });
+    expect(store.reviewLog(callId).length).toBe(logBefore + 1);
+    expect(() => store.transaction(async () => undefined)).toThrow(/synchronous/);
+    expect(store.reviewLog(callId).length).toBe(logBefore + 1);
   });
 });
 

@@ -65,6 +65,7 @@ export interface FinalSummary {
 
 export class Store {
   private db: DatabaseSync;
+  private txDepth = 0;
   readonly audioDir: string;
 
   constructor(dataDir: string, private orgId = "default") {
@@ -164,6 +165,31 @@ export class Store {
   }
 
   /** Save a new automatic result plus the review that now applies to it, and the final headline numbers. */
+  /**
+   * Run `fn` atomically: every write inside it commits together or not at all. Use it whenever a
+   * change touches both the append-only `review_events` log and the call row, so the audit trail
+   * can never record something the call itself doesn't reflect. Nested calls become savepoints,
+   * so an inner failure that the caller catches rolls back only the inner writes.
+   */
+  transaction<T>(fn: () => T): T {
+    const nested = this.db.isTransaction;
+    const savepoint = `tx_${++this.txDepth}`;
+    this.db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
+    try {
+      const result = fn();
+      // DatabaseSync is synchronous; an async body would commit before its awaited writes ran.
+      if (result instanceof Promise) throw new Error("Store.transaction() needs a synchronous function.");
+      this.db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
+      return result;
+    } catch (err) {
+      // Skip the rollback if SQLite already aborted the transaction itself.
+      if (this.db.isTransaction) this.db.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK");
+      throw err;
+    } finally {
+      this.txDepth--;
+    }
+  }
+
   saveResult(id: string, auto: ScoreResult, review: CallReview | null, final: FinalSummary): void {
     this.db
       .prepare(
