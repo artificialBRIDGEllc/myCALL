@@ -164,32 +164,44 @@ export class Store {
       .run(JSON.stringify(t), t.durationSec, id, this.orgId);
   }
 
-  /** Save a new automatic result plus the review that now applies to it, and the final headline numbers. */
   /**
    * Run `fn` atomically: every write inside it commits together or not at all. Use it whenever a
    * change touches both the append-only `review_events` log and the call row, so the audit trail
    * can never record something the call itself doesn't reflect. Nested calls become savepoints,
    * so an inner failure that the caller catches rolls back only the inner writes.
+   *
+   * Depth is tracked here rather than read from `DatabaseSync#isTransaction`, which only exists
+   * from Node 22.16 (package.json supports >= 22.13).
    */
   transaction<T>(fn: () => T): T {
-    const nested = this.db.isTransaction;
-    const savepoint = `tx_${++this.txDepth}`;
+    // DatabaseSync is synchronous: an async body's awaited writes would land outside the
+    // transaction. Refuse async functions before running any of their code.
+    if (fn.constructor.name === "AsyncFunction") throw new Error("Store.transaction() needs a synchronous function.");
+    const nested = this.txDepth > 0;
+    const savepoint = `tx_${this.txDepth + 1}`;
     this.db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
+    this.txDepth++;
     try {
       const result = fn();
-      // DatabaseSync is synchronous; an async body would commit before its awaited writes ran.
-      if (result instanceof Promise) throw new Error("Store.transaction() needs a synchronous function.");
+      if (result instanceof Promise) {
+        result.catch(() => {}); // rolled back below; don't leave the rejection unhandled
+        throw new Error("Store.transaction() needs a synchronous function.");
+      }
       this.db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
       return result;
     } catch (err) {
-      // Skip the rollback if SQLite already aborted the transaction itself.
-      if (this.db.isTransaction) this.db.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK");
+      try {
+        this.db.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK");
+      } catch {
+        // SQLite already aborted the transaction on its own (e.g. SQLITE_FULL): nothing left to undo.
+      }
       throw err;
     } finally {
       this.txDepth--;
     }
   }
 
+  /** Save a new automatic result plus the review that now applies to it, and the final headline numbers. */
   saveResult(id: string, auto: ScoreResult, review: CallReview | null, final: FinalSummary): void {
     this.db
       .prepare(
