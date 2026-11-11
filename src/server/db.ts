@@ -63,6 +63,9 @@ export interface FinalSummary {
   totals: FinalTotals;
 }
 
+/** A callback result that isn't a promise: `Store.transaction()` bodies must finish synchronously. */
+type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
+
 export class Store {
   private db: DatabaseSync;
   private txDepth = 0;
@@ -164,32 +167,60 @@ export class Store {
       .run(JSON.stringify(t), t.durationSec, id, this.orgId);
   }
 
-  /** Save a new automatic result plus the review that now applies to it, and the final headline numbers. */
   /**
    * Run `fn` atomically: every write inside it commits together or not at all. Use it whenever a
    * change touches both the append-only `review_events` log and the call row, so the audit trail
    * can never record something the call itself doesn't reflect. Nested calls become savepoints,
    * so an inner failure that the caller catches rolls back only the inner writes.
+   *
+   * Depth is tracked here rather than read from `DatabaseSync#isTransaction`, which only exists
+   * from Node 22.16 (package.json supports >= 22.13).
    */
-  transaction<T>(fn: () => T): T {
-    const nested = this.db.isTransaction;
-    const savepoint = `tx_${++this.txDepth}`;
+  transaction<T>(fn: () => Synchronous<T>): T {
+    // DatabaseSync is synchronous: an async body's awaited writes would land outside the
+    // transaction, and JS can't cancel them once started. The parameter type rejects
+    // promise-returning callbacks at compile time; these checks back that up at runtime.
+    if (fn.constructor.name === "AsyncFunction") throw new Error("Store.transaction() needs a synchronous function.");
+    const nested = this.txDepth > 0;
+    const savepoint = `tx_${this.txDepth + 1}`;
     this.db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
+    this.txDepth++;
     try {
-      const result = fn();
-      // DatabaseSync is synchronous; an async body would commit before its awaited writes ran.
-      if (result instanceof Promise) throw new Error("Store.transaction() needs a synchronous function.");
+      const result = fn() as T;
+      // Any thenable, not just this realm's Promise (e.g. one from node:vm).
+      if (typeof (result as { then?: unknown } | null | undefined)?.then === "function") {
+        Promise.resolve(result).catch(() => {}); // rolled back below; don't leave the rejection unhandled
+        throw new Error("Store.transaction() needs a synchronous function.");
+      }
       this.db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
       return result;
     } catch (err) {
-      // Skip the rollback if SQLite already aborted the transaction itself.
-      if (this.db.isTransaction) this.db.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK");
+      try {
+        this.db.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK");
+      } catch (rollbackErr) {
+        // Fine if SQLite already ended the transaction itself (e.g. SQLITE_FULL): nothing left to undo.
+        // If it's still open, the store is wedged; say so instead of hiding it behind `err`.
+        if (this.inTransaction()) throw new AggregateError([err, rollbackErr], "Store.transaction() failed and could not roll back.");
+      }
       throw err;
     } finally {
       this.txDepth--;
     }
   }
 
+  /** Whether SQLite has a transaction open, on every supported Node version (isTransaction is 22.16+). */
+  private inTransaction(): boolean {
+    const known = (this.db as { isTransaction?: unknown }).isTransaction;
+    if (typeof known === "boolean") return known;
+    try {
+      this.db.exec("BEGIN; ROLLBACK");
+      return false;
+    } catch {
+      return true; // BEGIN fails only inside an open transaction
+    }
+  }
+
+  /** Save a new automatic result plus the review that now applies to it, and the final headline numbers. */
   saveResult(id: string, auto: ScoreResult, review: CallReview | null, final: FinalSummary): void {
     this.db
       .prepare(

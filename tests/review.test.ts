@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { CallDetail, Calibration, CallReview, Rubric } from "../src/core/types.js";
@@ -355,8 +356,112 @@ describe("atomic audit writes", () => {
       ).toThrow("inner");
     });
     expect(store.reviewLog(callId).length).toBe(logBefore + 1);
-    expect(() => store.transaction(async () => undefined)).toThrow(/synchronous/);
-    expect(store.reviewLog(callId).length).toBe(logBefore + 1);
+  });
+
+  it("refuses async bodies before running them, so none of their writes escape the transaction", () => {
+    const logBefore = store.reviewLog(callId).length;
+    let ran = false;
+    expect(() =>
+      store.transaction(async () => {
+        ran = true;
+      }),
+    ).toThrow(/synchronous/);
+    expect(ran).toBe(false);
+    // A plain function that returns a promise is caught after the fact and rolled back.
+    const event = { callId, action: "override" as const, criterionId: null, fromStatus: null, toStatus: null, reviewer: "t", note: "n", at: "2026-11-11T00:00:00Z" };
+    expect(() =>
+      store.transaction(() => {
+        store.addReviewEvent(event);
+        return Promise.reject(new Error("later"));
+      }),
+    ).toThrow(/synchronous/);
+    expect(store.reviewLog(callId).length).toBe(logBefore);
+  });
+
+  it("rolls back when a body returns a promise from another realm", () => {
+    const logBefore = store.reviewLog(callId).length;
+    const event = { callId, action: "override" as const, criterionId: null, fromStatus: null, toStatus: null, reviewer: "t", note: "n", at: "2026-11-11T00:00:00Z" };
+    const foreign = vm.runInNewContext("Promise.resolve(1)") as Promise<number>;
+    expect(foreign instanceof Promise).toBe(false); // the case `instanceof` missed
+    expect(() =>
+      store.transaction((() => {
+        store.addReviewEvent(event);
+        return foreign;
+      }) as () => never),
+    ).toThrow(/synchronous/);
+    expect(store.reviewLog(callId).length).toBe(logBefore);
+  });
+
+  it("reports a rollback that fails while the transaction is still open, and stays quiet when SQLite already ended it", () => {
+    const holder = store as unknown as { db: DatabaseSync };
+    const real = holder.db;
+    const withRollback = (onRollback: () => void) =>
+      new Proxy(real, {
+        get: (target, prop) => {
+          if (prop === "exec") return (sql: string) => (sql === "ROLLBACK" ? onRollback() : target.exec(sql));
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    try {
+      // Rollback fails and the transaction is still open: surface both errors.
+      holder.db = withRollback(() => {
+        throw new Error("rollback failed");
+      });
+      let caught: unknown;
+      try {
+        store.transaction(() => {
+          throw new Error("write failed");
+        });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(AggregateError);
+      expect((caught as AggregateError).errors.map((e: Error) => e.message)).toEqual(["write failed", "rollback failed"]);
+      real.exec("ROLLBACK"); // clean up the transaction the fake left open
+
+      // SQLite already ended it: only the original error, and the store keeps working.
+      holder.db = withRollback(() => {
+        real.exec("ROLLBACK");
+        throw new Error("cannot rollback - no transaction is active");
+      });
+      expect(() =>
+        store.transaction(() => {
+          throw new Error("write failed");
+        }),
+      ).toThrow(/^write failed$/);
+    } finally {
+      holder.db = real;
+    }
+    expect(store.transaction(() => 42)).toBe(42);
+  });
+
+  it("rolls back on Node versions without DatabaseSync#isTransaction (< 22.16)", async () => {
+    // Simulate Node 22.13-22.15, where the property doesn't exist.
+    const holder = store as unknown as { db: DatabaseSync };
+    const real = holder.db;
+    holder.db = new Proxy(real, {
+      get: (target, prop) => {
+        if (prop === "isTransaction") return undefined;
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    try {
+      const auto = await scoreCall({ rubric: medicareRubric, transcript: sampleTranscript, reviewer: null });
+      const logBefore = store.reviewLog(callId);
+      vi.spyOn(store, "saveReview").mockImplementationOnce(() => {
+        throw new Error("disk I/O error");
+      });
+      expect(() => pipeline.setOverride(callId, "rapport", { status: "fail", note: "Cold throughout.", reviewer: "Pat" })).toThrow(/disk I\/O error/);
+      expect(store.reviewLog(callId)).toEqual(logBefore);
+      // The transaction was closed, so later saves still work.
+      expect(() => pipeline.saveScored(callId, medicareRubric, auto)).not.toThrow();
+      expect(() => pipeline.setOverride(callId, "rapport", { status: "fail", note: "Cold throughout.", reviewer: "Pat" })).not.toThrow();
+      expect(store.reviewLog(callId).length).toBe(logBefore.length + 1);
+    } finally {
+      holder.db = real;
+    }
   });
 });
 
