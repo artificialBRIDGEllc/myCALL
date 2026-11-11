@@ -63,6 +63,9 @@ export interface FinalSummary {
   totals: FinalTotals;
 }
 
+/** A callback result that isn't a promise: `Store.transaction()` bodies must finish synchronously. */
+type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
+
 export class Store {
   private db: DatabaseSync;
   private txDepth = 0;
@@ -173,18 +176,20 @@ export class Store {
    * Depth is tracked here rather than read from `DatabaseSync#isTransaction`, which only exists
    * from Node 22.16 (package.json supports >= 22.13).
    */
-  transaction<T>(fn: () => T): T {
+  transaction<T>(fn: () => Synchronous<T>): T {
     // DatabaseSync is synchronous: an async body's awaited writes would land outside the
-    // transaction. Refuse async functions before running any of their code.
+    // transaction, and JS can't cancel them once started. The parameter type rejects
+    // promise-returning callbacks at compile time; these checks back that up at runtime.
     if (fn.constructor.name === "AsyncFunction") throw new Error("Store.transaction() needs a synchronous function.");
     const nested = this.txDepth > 0;
     const savepoint = `tx_${this.txDepth + 1}`;
     this.db.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
     this.txDepth++;
     try {
-      const result = fn();
-      if (result instanceof Promise) {
-        result.catch(() => {}); // rolled back below; don't leave the rejection unhandled
+      const result = fn() as T;
+      // Any thenable, not just this realm's Promise (e.g. one from node:vm).
+      if (typeof (result as { then?: unknown } | null | undefined)?.then === "function") {
+        Promise.resolve(result).catch(() => {}); // rolled back below; don't leave the rejection unhandled
         throw new Error("Store.transaction() needs a synchronous function.");
       }
       this.db.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
@@ -192,12 +197,26 @@ export class Store {
     } catch (err) {
       try {
         this.db.exec(nested ? `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}` : "ROLLBACK");
-      } catch {
-        // SQLite already aborted the transaction on its own (e.g. SQLITE_FULL): nothing left to undo.
+      } catch (rollbackErr) {
+        // Fine if SQLite already ended the transaction itself (e.g. SQLITE_FULL): nothing left to undo.
+        // If it's still open, the store is wedged; say so instead of hiding it behind `err`.
+        if (this.inTransaction()) throw new AggregateError([err, rollbackErr], "Store.transaction() failed and could not roll back.");
       }
       throw err;
     } finally {
       this.txDepth--;
+    }
+  }
+
+  /** Whether SQLite has a transaction open, on every supported Node version (isTransaction is 22.16+). */
+  private inTransaction(): boolean {
+    const known = (this.db as { isTransaction?: unknown }).isTransaction;
+    if (typeof known === "boolean") return known;
+    try {
+      this.db.exec("BEGIN; ROLLBACK");
+      return false;
+    } catch {
+      return true; // BEGIN fails only inside an open transaction
     }
   }
 
