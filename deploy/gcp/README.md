@@ -24,7 +24,7 @@ Recordings of Medicare calls are protected health information. Before uploading 
 
    ```bash
    gcloud config set project YOUR-PROJECT-ID
-   git clone https://github.com/copperlang2007/myCALL.git && cd myCALL
+   git clone https://github.com/artificialBRIDGEllc/myCALL.git && cd myCALL
    bash deploy/gcp/setup.sh
    ```
 
